@@ -9,7 +9,13 @@
   const KY = 110574.0;                 // metres per degree latitude near 1.3°N (WGS84)
   const KX0 = 111319.49;               // metres per degree longitude at the equator
   const CELL = 0.002;                  // spatial grid cell (~220 m)
-  const KIND_LABEL = ['Road', 'Park connector', 'Access path'];
+  // Kinds (run-net-2): 0 road · 1 park connector · 2 crossing · 3 path · 4 steps · 5 sidewalk · 6 service road.
+  // Flags: ESTATE = a path, steps or service road inside a housing estate (OSM landuse=residential);
+  // LINK = one of those that is the way from a park connector to the streets, so the default profile keeps it.
+  // A v1 file's kind 2 ("access" path to a park connector) is read as a path flagged LINK.
+  const KIND_LABEL = ['Road', 'Park connector', 'Crossing', 'Path', 'Steps', 'Sidewalk', 'Service road'];
+  const LINK = 16, ESTATE = 32;
+  const STEPS_FACTOR = 1.3;             // steps cost a little more than their length
 
   function mDist(lat1, lon1, lat2, lon2) {
     const kx = KX0 * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180);
@@ -51,7 +57,8 @@
       const E = records.length - 1;
       let nv = 0; for (let i = 1; i <= E; i++) nv += (records[i].length - 2) / 2;
       const lat = new Float64Array(nv), lon = new Float64Array(nv);
-      const eStart = new Int32Array(E + 1), eKind = new Uint8Array(E), eName = new Int32Array(E);
+      const eStart = new Int32Array(E + 1), eKind = new Uint8Array(E), eFlag = new Uint8Array(E), eName = new Int32Array(E);
+      const v1 = meta.format !== 'run-net-2';
       const eLen = new Float64Array(E), eU = new Int32Array(E), eV = new Int32Array(E);
       const nodeIdx = new Map(); const nLat = [], nLon = [];
       const nodeOf = (la, lo) => {
@@ -63,7 +70,8 @@
       let p = 0;
       for (let e = 0; e < E; e++) {
         const r = records[e + 1];
-        eKind[e] = r[0]; eName[e] = r[1]; eStart[e] = p;
+        if (v1 && r[0] === 2) { eKind[e] = 3; eFlag[e] = LINK; } else { eKind[e] = r[0] & 15; eFlag[e] = r[0] & 0xf0; }
+        eName[e] = r[1]; eStart[e] = p;
         let la = r[2], lo = r[3]; const la0 = la, lo0 = lo;
         lat[p] = la / 1e6; lon[p] = lo / 1e6; p++;
         let len = 0;
@@ -75,7 +83,8 @@
         eLen[e] = len; eU[e] = nodeOf(la0, lo0); eV[e] = nodeOf(la, lo);
       }
       eStart[E] = p;
-      Object.assign(this, { lat, lon, eStart, eKind, eName, eLen, eU, eV, E });
+      Object.assign(this, { lat, lon, eStart, eKind, eFlag, eName, eLen, eU, eV, E });
+      this.hasPaths = !v1;
       this.N = nLat.length; this.nLat = Float64Array.from(nLat); this.nLon = Float64Array.from(nLon);
       // CSR adjacency
       const deg = new Int32Array(this.N + 1);
@@ -191,10 +200,16 @@
       return fwd ? out : out.reverse();
     }
 
+    /** Can this profile use edge e? 'roads' (default) avoids housing estates: everything except the paths,
+     *  steps and service roads between blocks, bar the links to park connectors. 'all' = every way on foot. */
+    allowed(e, profile) {
+      return profile === 'all' || (this.eFlag[e] & ESTATE) === 0 || (this.eFlag[e] & LINK) !== 0;
+    }
+
     weight(e, opts) {
-      if (this.blocked[e]) return Infinity;
+      if (this.blocked[e] || !this.allowed(e, opts.profile)) return Infinity;
       const k = this.eKind[e];
-      return k === 1 ? (opts.pcnFactor || 1) : 1;
+      return k === 1 ? (opts.pcnFactor || 1) : k === 4 ? STEPS_FACTOR : 1;
     }
 
     /** A* between two snapped points. Returns {parts:[{edge,t0,t1}], length} or null. */
@@ -385,7 +400,7 @@
     // merge pieces into named runs; unnamed short links (<40 m) inherit the previous name
     const runs = [];
     for (const p of pieces) {
-      const name = p.name || (p.kind === 1 ? 'Park connector' : p.kind === 2 ? 'Access path' : 'Road');
+      const name = p.name || KIND_LABEL[p.kind] || 'Path';
       const last = runs[runs.length - 1];
       if (last && (last.name === name || (!p.name && p.length < 40))) { last.coords = last.coords.concat(p.coords.slice(1)); last.length += p.length; }
       else runs.push({ name, coords: p.coords.slice(), length: p.length });
@@ -442,5 +457,5 @@
     }
     return out;
   }
-  return { Network, plan, cues, cueSheet, toGPX, parseGPX, densify, mDist, lengthOf, pointInPoly, KIND_LABEL };
+  return { Network, plan, cues, cueSheet, toGPX, parseGPX, densify, mDist, lengthOf, pointInPoly, KIND_LABEL, LINK, ESTATE };
 });

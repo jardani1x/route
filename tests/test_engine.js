@@ -96,4 +96,37 @@ const gl = E.gainLoss([10, 10.5, 11, 13, 12.9, 12, 9, 9.4, 15]); ok(Math.abs(gl.
 }
 const es = E.elevationSamples(outbound, 200); const nExp = Math.min(200, Math.floor(length(outbound) / 25) + 1); ok(es.pts.length === nExp && Math.abs(es.dists[nExp - 1] - length(outbound)) < 1e-6, `elevation sampling: ${es.pts.length} evenly spaced points`);
 
+// 6) routing profiles on a tiny run-net-2 network: a housing block with an estate path across it, a park
+//    connector north of it joined to the street by a flagged link and by an estate path, and a public
+//    (non-estate) path east of the block that the default profile may use.
+{
+  const P = (la, lo) => [Math.round(la * 1e6), Math.round(lo * 1e6)];
+  const rec = (kind, a, b) => { const A = P(...a), B = P(...b); return [kind, -1, A[0], A[1], B[0] - A[0], B[1] - A[1]]; };
+  const SW = [1.300, 103.800], SE = [1.300, 103.803], NE = [1.303, 103.803], NW = [1.303, 103.800], NM = [1.303, 103.8015];
+  const PW = [1.306, 103.800], PM = [1.306, 103.8015], PE = [1.306, 103.803];
+  const v2 = new RC.Network([{ format: 'run-net-2', names: [] },
+    rec(0, SW, SE), rec(0, SE, NE), rec(0, NE, NM), rec(0, NM, NW), rec(0, NW, SW),   // the block's streets
+    rec(3 | RC.ESTATE, SW, NE),                                                      // estate path across the block
+    rec(1, PW, PM), rec(1, PM, PE),                                                  // park connector
+    rec(3 | RC.ESTATE | RC.LINK, NM, PM),                                            // its link to the street
+    rec(3 | RC.ESTATE, NW, PW),                                                      // estate path to it
+    rec(3, SE, [1.300, 103.806]), rec(0, [1.300, 103.806], [1.303, 103.806]),        // public path, then a road
+    rec(3, NE, [1.303, 103.806])]);                                                  // and a public path back
+  const at = (r, p) => r.snapPoint(p[0], p[1], 20);
+  const kindsOf = (res) => res.parts.map(x => v2.eKind[x.edge] + (v2.eFlag[x.edge] & RC.LINK ? '*' : v2.eFlag[x.edge] & RC.ESTATE ? 'e' : ''));
+  const roads = new E.Router(v2, 'roads'), all = new E.Router(v2, 'all');
+  const r1 = v2.route(at(roads, SW), at(roads, NE), roads.opts()), a1 = v2.route(at(all, SW), at(all, NE), all.opts());
+  ok(r1 && Math.abs(r1.length - 667) < 5 && !kindsOf(r1).includes('3e'), `default profile goes round the block: ${r1 && r1.length.toFixed(0)} m via ${r1 && kindsOf(r1)}`);
+  ok(a1 && Math.abs(a1.length - 471) < 5, `all-paths profile cuts across it: ${a1 && a1.length.toFixed(0)} m`);
+  const r2 = v2.route(at(roads, SW), at(roads, PW), roads.opts()), a2 = v2.route(at(all, SW), at(all, PW), all.opts());
+  ok(r2 && kindsOf(r2).includes('3*') && !kindsOf(r2).includes('3e') && Math.abs(r2.length - 1000) < 5, `default profile reaches the park connector by its link: ${r2 && r2.length.toFixed(0)} m`);
+  const r3 = v2.route(at(roads, [1.3015, 103.806]), at(roads, SW), roads.opts());
+  ok(r3 && kindsOf(r3).includes('3') && Math.abs(r3.length - 834) < 6, `default profile may use public (non-estate) paths: ${r3 && r3.length.toFixed(0)} m via ${r3 && kindsOf(r3)}`);
+  ok(a2 && Math.abs(a2.length - 667) < 5, `all-paths profile takes the shorter path: ${a2 && a2.length.toFixed(0)} m`);
+  const tap = roads.snapPoint(1.3015, 103.8015, 200);
+  ok(tap && !(v2.eFlag[tap.edge] & RC.ESTATE), 'default profile never snaps a tap onto an estate path');
+  const v1 = new RC.Network([{ format: 'run-net-1', names: [] }, rec(0, SW, SE), rec(2, SE, NE)]);
+  ok(v1.eKind[1] === 3 && v1.eFlag[1] === RC.LINK && !v1.hasPaths && new E.Router(v1, 'all').profile === 'roads', 'v1 access paths read as links; v1 has no all-paths profile');
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED'); process.exit(fails ? 1 : 0);

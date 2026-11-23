@@ -141,19 +141,35 @@
 
   // ---------------- router (network wrapper) ----------------
   class Router {
-    constructor(net) {
-      this.net = net; this.pcnFactor = 0.8; this.avoidClosures = true;
-      // largest connected component: taps prefer it so legs can be joined
-      const comp = new Int32Array(net.N).fill(-1); let best = -1, bestSize = 0, id = 0;
-      for (let s = 0; s < net.N; s++) {
-        if (comp[s] >= 0) continue; const st = [s]; comp[s] = id; let size = 0;
-        while (st.length) { const n = st.pop(); size++; for (let i = net.adjStart[n]; i < net.adjStart[n + 1]; i++) { const e = net.adj[i]; const m = net.eU[e] === n ? net.eV[e] : net.eU[e]; if (comp[m] < 0) { comp[m] = id; st.push(m); } } }
-        if (size > bestSize) { bestSize = size; best = id; } id++;
-      }
-      this.comp = comp; this.main = best;
+    constructor(net, profile = 'roads') {
+      this.net = net; this.pcnFactor = 0.8; this.avoidClosures = true; this._comps = {};
+      this.setProfile(profile);
     }
-    _open(e) { return !(this.avoidClosures && this.net.blocked[e]); }
-    opts() { return { pcnFactor: this.pcnFactor, mode: 'oneway' }; }
+    /** 'roads' (streets, sidewalks, crossings, park connectors) or 'all' (every footpath, steps included). */
+    setProfile(profile) {
+      this.profile = profile === 'all' && this.net.hasPaths ? 'all' : 'roads';
+      // largest connected component for this profile: taps prefer it so legs can be joined
+      if (!this._comps[this.profile]) {
+        const net = this.net, p = this.profile, comp = new Int32Array(net.N).fill(-1);
+        let best = -1, bestSize = 0, id = 0;
+        for (let s = 0; s < net.N; s++) {
+          if (comp[s] >= 0) continue; const st = [s]; comp[s] = id; let size = 0;
+          while (st.length) {
+            const n = st.pop(); size++;
+            for (let i = net.adjStart[n]; i < net.adjStart[n + 1]; i++) {
+              const e = net.adj[i]; if (!net.allowed(e, p)) continue;
+              const m = net.eU[e] === n ? net.eV[e] : net.eU[e]; if (comp[m] < 0) { comp[m] = id; st.push(m); }
+            }
+          }
+          if (size > bestSize) { bestSize = size; best = id; } id++;
+        }
+        this._comps[p] = { comp, main: best };
+      }
+      this.comp = this._comps[this.profile].comp; this.main = this._comps[this.profile].main;
+      return this.profile;
+    }
+    _open(e) { return !(this.avoidClosures && this.net.blocked[e]) && this.net.allowed(e, this.profile); }
+    opts() { return { pcnFactor: this.pcnFactor, mode: 'oneway', profile: this.profile }; }
     snapPoint(lat, lon, tolM) {
       const n = this.net;
       return n.snap(lat, lon, tolM, (e) => this._open(e) && this.comp[n.eU[e]] === this.main) || n.snap(lat, lon, tolM, (e) => this._open(e));
@@ -213,7 +229,7 @@
       const L = length(pts); let step = Math.min(40, Math.max(8, tolM / 2));
       if (L / step > 400) step = L / 400;
       const samples = L > 0 ? resample(pts, step) : pts;
-      const sigma = Math.max(6, tolM / 3), beta = 15, opts = { pcnFactor: 1, mode: 'oneway' };
+      const sigma = Math.max(6, tolM / 3), beta = 15, opts = { pcnFactor: 1, mode: 'oneway', profile: this.profile };
       let layers = [];
       for (const s of samples) {
         const c = n.candidates(s[0], s[1], tolM, 4, (e) => this._open(e));

@@ -23,7 +23,7 @@
   --accent: #0f766e;         /* controls and waypoints: deep teal */
   --pcn: #1f9d55;            /* park connectors */
   --danger: #d62d2d;
-  --road: #c3c9c5; --road-casing: #a6aea9; --road-fill: #ffffff; --label: #39443f; --halo: rgba(255,255,255,.92);
+  --road: #c3c9c5; --road-casing: #a6aea9; --road-fill: #ffffff; --label: #39443f; --halo: rgba(255,255,255,.92); --path: #8f9b95;
   --font-display: "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif;
   --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   --shadow: 0 4px 18px rgba(20, 32, 27, .18);
@@ -34,14 +34,14 @@
   :root:not([data-theme="light"]) {
     --bg: #141917; --card: #1d2421; --ink: #e7eeea; --muted: #9aa8a1; --line: #303a35;
     --route: #ff7a45; --accent: #2bb3a6; --pcn: #46c47c; --danger: #ff6b6b;
-    --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9);
+    --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9); --path: #75817b; --path: #75817b;
     --shadow: 0 4px 18px rgba(0,0,0,.5); color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #141917; --card: #1d2421; --ink: #e7eeea; --muted: #9aa8a1; --line: #303a35;
   --route: #ff7a45; --accent: #2bb3a6; --pcn: #46c47c; --danger: #ff6b6b;
-  --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9);
+  --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9); --path: #75817b;
   --shadow: 0 4px 18px rgba(0,0,0,.5); color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -280,6 +280,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
     <h3>Settings</h3>
     <div class="field"><label for="units">Units</label><select id="units"><option value="km">Kilometres</option><option value="mi">Miles</option></select></div>
     <div class="field"><label for="pace">Pace for <span id="paceAct">running</span> (min:sec per <span id="paceUnit">km</span>)</label><input id="pace" type="text" inputmode="numeric"></div>
+    <div class="field"><label for="paths">Route along</label><select id="paths"><option value="roads">Streets, park connectors and public paths</option><option value="all">Every footpath, including between blocks</option></select><span class="small" id="pathsNote" style="display:block;margin-top:4px">The first keeps out of housing estates: streets and their pavements, park connectors, park and waterfront paths and footbridges, but no short cuts between blocks or through condos. The second uses every path, steps included. Paths inside schools and military land are never used.</span></div>
     <label class="check" for="showPcn"><input type="checkbox" id="showPcn" checked><span>Show park connectors on the map</span></label>
     <label class="check" for="preferPcn"><input type="checkbox" id="preferPcn" checked><span>Prefer park connectors when snapping a tap</span></label>
     <label class="check" for="avoidClosures"><input type="checkbox" id="avoidClosures" checked><span>Route around closures<br><span class="small">Closed stretches are dashed red on the map; hover or tap one for its dates. Extents are approximate, so check signs on site.</span></span></label>
@@ -287,7 +288,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
   <section>
     <h3>How it works</h3>
     <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
-    <p class="small">Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors, drawn on centrelines. Unnamed footpaths are not in the network yet. Elevation comes from a 90 m surface model (it includes roofs and trees), smoothed over about 270 m, so treat the climb as a guide.</p>
+    <p class="small" id="networkNote">Routing uses OpenStreetMap streets, pavements and footpaths (expressways left out) and NParks park connectors. Elevation comes from a 90 m surface model (it includes roofs and trees), smoothed over about 270 m, so treat the climb as a guide.</p>
     <p class="small">Routing data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL); park connectors © NParks via data.gov.sg (Singapore Open Data Licence); basemap © OneMap / Singapore Land Authority; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0). <a href="https://github.com/jardani1x/route" target="_blank" rel="noopener">Source and data licence</a>.</p>
   </section>
 </aside>
