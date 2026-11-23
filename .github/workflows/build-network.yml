@@ -36,11 +36,12 @@ jobs:
 
       - name: Download OpenStreetMap and cut out Singapore
         run: |
-          fetch() { curl -sSfL --retry 3 --retry-delay 10 --connect-timeout 30 -o src.osm.pbf "$1"; }
+          # give up on a mirror that is slow (<50 kB/s for a minute) or takes over 10 minutes
+          fetch() { curl -sSfL --retry 2 --retry-delay 10 --connect-timeout 30 --max-time 600 --speed-limit 50000 --speed-time 60 -o src.osm.pbf "$1"; }
           SRC=""
           for url in \
-            https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf \
             https://download.openstreetmap.fr/extracts/asia/singapore-latest.osm.pbf \
+            https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf \
             https://download.bbbike.org/osm/bbbike/Singapore/Singapore.osm.pbf; do
             if fetch "$url"; then SRC="$url"; echo "::notice::OSM source: $url ($(du -h src.osm.pbf | cut -f1))"; break
             else echo "::warning::OSM download failed (curl exit $?): $url"; fi
