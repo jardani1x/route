@@ -106,7 +106,8 @@ tracking along the route, lists/folders, merge/duplicate/split routes, slope col
 
 ## Data and licences
 
-See `DATA_LICENSE.md`. Both networks are Derived Databases of OpenStreetMap under the ODbL 1.0.
+Code: MIT (`LICENSE`). `leaflet.js` and `leaflet.css` are Leaflet 1.9.4 under its BSD 2-Clause
+licence (`LICENSE-LEAFLET`). Data: see `DATA_LICENSE.md`. Both networks are Derived Databases of OpenStreetMap under the ODbL 1.0.
 
 - Streets and paths: © OpenStreetMap contributors, ODbL.
 - Park connectors: NParks, Singapore Open Data Licence (via data.gov.sg).

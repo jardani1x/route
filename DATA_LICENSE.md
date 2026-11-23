@@ -24,4 +24,4 @@ Services used at run time (not stored in this repository):
 | Open-Meteo elevation API | CC BY 4.0, free for non-commercial use |
 | OneMap address search | OneMap terms of use |
 
-The code licence is separate and is set in `LICENSE`.
+The code is under the MIT licence (`LICENSE`); the bundled Leaflet files are under Leaflet's BSD 2-Clause licence (`LICENSE-LEAFLET`).
