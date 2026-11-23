@@ -28,6 +28,7 @@ Opening `index.html` straight from disk (`file://`) does not work, because the b
 | Toggle Snap to Map | Magnet button / Shift |
 | Route editing: eraser, trace over a section to replace it | Eraser (E) trims ends or removes a middle stretch and reconnects; tracing between two route points replaces that section |
 | Undo / redo / clear | Buttons, Ctrl+Z, Ctrl+Shift+Z |
+| Move the map while drawing | Right-drag (or middle-drag), or hold Space and drag; two fingers to pan and pinch on touch screens (one finger keeps drawing) |
 | Finish route | Out & back, close loop, reverse, trim to a distance |
 | Measure distance | km or miles, distance markers, time from your pace per activity |
 | Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m DEM), climb total, hover chart to see the spot on the map |
@@ -81,3 +82,5 @@ tracking along the route, lists/folders, merge/duplicate/split routes, slope col
 plus every editor operation and the codecs. `tests/smoke.py` (Playwright, with the site served on port 8766) drives the page:
 draw, tap, erase, undo/redo, out & back, waypoints, save, export → import, share link, search,
 the offline-tile fallback, and the online basemap path with stubbed tile and elevation servers.
+`tests/pan_while_drawing.py` (Playwright) checks right-drag and Space-drag panning in Draw mode on desktop,
+and one-finger drawing, two-finger pan, pinch-zoom and stroke-then-second-finger on a touch screen.

@@ -54,6 +54,8 @@ button { cursor: pointer; }
 #map.tool-draw, #map.tool-draw .leaflet-interactive { cursor: crosshair; }
 #map.tool-erase, #map.tool-erase .leaflet-interactive { cursor: cell; }
 #map.tool-waypoint { cursor: copy; }
+#map.space-pan, #map.space-pan .leaflet-interactive { cursor: grab; }
+#map.panning, #map.panning .leaflet-interactive, #map.space-pan.leaflet-dragging { cursor: grabbing; }
 .leaflet-container { background: var(--bg); font-family: var(--font-body); }
 .leaflet-control-attribution { font-size: 10.5px; background: color-mix(in srgb, var(--card) 82%, transparent) !important; color: var(--muted); }
 .leaflet-control-attribution a { color: var(--muted); }
@@ -280,7 +282,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
   </section>
   <section>
     <h3>How it works</h3>
-    <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere.</p>
+    <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
     <p class="small">Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors, drawn on centrelines. Unnamed footpaths are not in the network yet. Elevation comes from a 90 m terrain model, so treat it as a guide.</p>
     <p class="small">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>; park connectors © NParks via data.gov.sg; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.</p>
   </section>

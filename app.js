@@ -145,7 +145,9 @@
   // ---------------- tools & pointer input ----------------
   const mpp = () => 40075016.686 * Math.cos(map.getCenter().lat * Math.PI / 180) / (TILE * Math.pow(2, map.getZoom()));
   const tolM = (px) => Math.max(8, Math.min(300, px * mpp()));
-  const TOOL_HINT = { draw: 'Draw: trace along roads and paths, then lift to add it. Trace over part of the route to replace it.', erase: 'Eraser: rub over the part of the route to remove.', waypoint: 'Waypoint: tap where you want a marker.' };
+  const COARSE = window.matchMedia('(pointer: coarse)').matches;
+  const MOVE_HINT = COARSE ? 'Use two fingers to move or zoom the map.' : 'Right-drag, or hold Space and drag, to move the map.';
+  const TOOL_HINT = { draw: `Draw: trace along roads and paths, then lift to add it. ${MOVE_HINT}`, erase: `Eraser: rub over the part of the route to remove. ${MOVE_HINT}`, waypoint: 'Waypoint: tap where you want a marker.' };
   function setTool(t) {
     tool = tool === t ? 'pan' : t;
     $('#toolDraw').setAttribute('aria-pressed', String(tool === 'draw'));
@@ -153,7 +155,7 @@
     $('#toolWaypoint').setAttribute('aria-pressed', String(tool === 'waypoint'));
     const el = map.getContainer(); el.classList.remove('tool-draw', 'tool-erase', 'tool-waypoint'); if (tool !== 'pan') el.classList.add('tool-' + tool);
     const drawing = tool === 'draw' || tool === 'erase';
-    if (drawing) { map.dragging.disable(); el.style.touchAction = 'none'; } else { map.dragging.enable(); el.style.touchAction = ''; }
+    if (drawing && !spacePan) { map.dragging.disable(); el.style.touchAction = 'none'; } else { map.dragging.enable(); el.style.touchAction = drawing ? 'none' : ''; }
     showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of roads and park connectors.' : ''));
     if (editor) renderRoute();
   }
@@ -161,35 +163,69 @@
   function showBanner(text) { const b = $('#banner'); b.textContent = text || ''; b.hidden = !text; }
 
   const mapEl = map.getContainer(), pointers = new Set();
-  let stroke = null;
+  let stroke = null, panDrag = null, spacePan = false, suppressMenu = false;
+  const isDrawing = () => tool === 'draw' || tool === 'erase';
   function cancelStroke() { if (stroke) { map.removeLayer(stroke.layer); stroke = null; } }
+  function finishStroke(s) {
+    map.removeLayer(s.layer);
+    if (s.kind === 'draw') report(editor.addTrace(s.pts, tolM(28)));
+    else report(editor.erase(s.pts, tolM(18)));
+  }
   mapEl.addEventListener('pointerdown', (e) => {
     pointers.add(e.pointerId);
-    if (tool !== 'draw' && tool !== 'erase') return;
-    if (pointers.size > 1) { cancelStroke(); return; }                       // second finger: let pinch-zoom happen
+    // Right- or middle-button drag moves the map in every mode (left button is busy drawing)
+    if (e.pointerType !== 'touch' && (e.button === 2 || e.button === 1) && !stroke) {
+      panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 };
+      try { mapEl.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      mapEl.classList.add('panning'); e.preventDefault(); return;
+    }
+    if (!isDrawing() || spacePan) return;
+    if (pointers.size > 1) {
+      // Second finger: hand the gesture to Leaflet's pinch (it pans and zooms). Keep what was already
+      // drawn if it was a real stroke, drop it if it was just the first finger of the pinch landing.
+      if (stroke) { const s = stroke; stroke = null; if (s.travel > 40 && s.pts.length >= 4) finishStroke(s); else map.removeLayer(s.layer); }
+      return;
+    }
     if ((e.pointerType === 'mouse' && e.button !== 0) || e.target.closest('.leaflet-marker-icon, .leaflet-control, .leaflet-popup')) return;
     const ll = map.mouseEventToLatLng(e);
-    stroke = { id: e.pointerId, kind: tool, pts: [[ll.lat, ll.lng]], px: [e.clientX, e.clientY],
+    stroke = { id: e.pointerId, kind: tool, pts: [[ll.lat, ll.lng]], px: [e.clientX, e.clientY], travel: 0,
       layer: L.polyline([ll], tool === 'draw' ? { color: cssVar('--route'), weight: 4, opacity: .75, dashArray: '6 6', interactive: false } : { color: cssVar('--danger'), weight: Math.round(18 * 2), opacity: .25, lineCap: 'round', interactive: false }).addTo(map) };
     try { mapEl.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     e.preventDefault();
   });
   mapEl.addEventListener('pointermove', (e) => {
+    if (panDrag && e.pointerId === panDrag.id) {
+      const dx = e.clientX - panDrag.x, dy = e.clientY - panDrag.y;
+      if (dx || dy) { map.panBy([-dx, -dy], { animate: false }); panDrag.x = e.clientX; panDrag.y = e.clientY; panDrag.moved += Math.abs(dx) + Math.abs(dy); }
+      return;
+    }
     if (!stroke || e.pointerId !== stroke.id) return;
-    if (Math.hypot(e.clientX - stroke.px[0], e.clientY - stroke.px[1]) < 3) return;
-    stroke.px = [e.clientX, e.clientY];
+    const step = Math.hypot(e.clientX - stroke.px[0], e.clientY - stroke.px[1]); if (step < 3) return;
+    stroke.px = [e.clientX, e.clientY]; stroke.travel += step;
     const ll = map.mouseEventToLatLng(e); stroke.pts.push([ll.lat, ll.lng]); stroke.layer.addLatLng(ll);
   });
-  function endStroke(e) {
+  function endPointer(e) {
     pointers.delete(e.pointerId);
+    if (panDrag && e.pointerId === panDrag.id) {
+      if (panDrag.moved > 3) { suppressMenu = true; setTimeout(() => { suppressMenu = false; }, 400); }
+      panDrag = null; mapEl.classList.remove('panning'); return;
+    }
     if (!stroke || e.pointerId !== stroke.id) return;
-    const s = stroke; stroke = null; map.removeLayer(s.layer);
-    if (e.type === 'pointercancel') return;
-    if (s.kind === 'draw') report(editor.addTrace(s.pts, tolM(28)));
-    else report(editor.erase(s.pts, tolM(18)));
+    const s = stroke; stroke = null;
+    if (e.type === 'pointercancel') { map.removeLayer(s.layer); return; }
+    finishStroke(s);
   }
-  mapEl.addEventListener('pointerup', endStroke);
-  mapEl.addEventListener('pointercancel', endStroke);
+  mapEl.addEventListener('pointerup', endPointer);
+  mapEl.addEventListener('pointercancel', endPointer);
+  // No browser context menu on the map: right-drag is for moving it
+  mapEl.addEventListener('contextmenu', (e) => { if (isDrawing() || panDrag || suppressMenu) e.preventDefault(); });
+  // Hold Space to drag the map with the left button while drawing (like design apps)
+  function setSpacePan(on) {
+    if (spacePan === on) return; spacePan = on;
+    mapEl.classList.toggle('space-pan', on);
+    if (isDrawing()) { if (on) map.dragging.enable(); else map.dragging.disable(); }
+  }
+  window.addEventListener('blur', () => setSpacePan(false));
   map.on('click', (e) => {
     if (!editor || tool === 'draw' || tool === 'erase') return;
     if (tool === 'waypoint') { openWaypoint(null, e.latlng.lat, e.latlng.lng); return; }
@@ -570,6 +606,7 @@
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); report(e.shiftKey ? editor.redo() : editor.undo()); return; }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); report(editor.redo()); return; }
     if (mod || e.altKey) return;
+    if (e.key === ' ' && isDrawing()) { e.preventDefault(); if (document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.blur(); if (!e.repeat) setSpacePan(true); return; }
     if (e.key === 'Shift') { shiftAlone = true; return; }
     if (e.key === 'Enter') { if (e.target.closest('button, a, summary')) return; e.preventDefault(); setTool('draw'); }
     else if (e.key.toLowerCase() === 'e') setTool('erase');
@@ -578,7 +615,7 @@
     else if (e.key === '+' || e.key === '=') map.zoomIn();
     else if (e.key === '-' || e.key === '_') map.zoomOut();
   });
-  document.addEventListener('keyup', (e) => { if (e.key === 'Shift' && shiftAlone && !typing(e.target) && editor) setSnap(!editor.snap); shiftAlone = false; });
+  document.addEventListener('keyup', (e) => { if (e.key === ' ') { if (spacePan) e.preventDefault(); setSpacePan(false); } if (e.key === 'Shift' && shiftAlone && !typing(e.target) && editor) setSnap(!editor.snap); shiftAlone = false; });
 
   // theme changes repaint canvas tiles and the route colours
   const repaint = () => { offlineBase.redraw(); pcnOverlay.redraw(); if (editor) renderRoute(); };
@@ -637,6 +674,6 @@
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { offlineBase.redraw(); pcnOverlay.redraw(); });
     initCapabilities();
   }
-  window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; } };  // for automated tests
+  window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // for automated tests
   boot();
 })();

@@ -53,6 +53,17 @@ detour.forEach((p, i) => { if (dc[i] > 0.1 * dL && dc[i] < 0.45 * dL) { const d 
 const before = ed.distance; const probeBefore = locate(ed.coords, probe).dist; const rr = ed.addTrace(resample(detour, 25), 40);
 ok(rr.ok && probeBefore > 60 && locate(ed.coords, probe).dist < 25, `trace over the middle replaces that section: probe ${probeBefore.toFixed(0)} m off -> ${locate(ed.coords, probe).dist.toFixed(1)} m off; ${(before / 1000).toFixed(3)} -> ${(ed.distance / 1000).toFixed(3)} km`);
 ed.undo();
+{ // overlapping legs: trace over part of an out & back route whose return leg runs 3 m to the east
+  // (other side of the road); the stroke ends nearer the return leg. It must replace part of ONE leg,
+  // not cut out the turnaround between the legs.
+  const shift = (c, m) => [c[0], c[1] + m / 111290];
+  const base = router.path([1.35707, 103.85017], [1.34349, 103.85733]), bc = E.geo.cumul(base);
+  const ob = new E.RouteEditor(router); ob.load(base.concat(base.slice().reverse().map(c => shift(c, 3))));
+  const L0 = ob.distance, legPts = resample(router.path(E.geo.pointAt(base, bc, 800), E.geo.pointAt(base, bc, 1400)), 20);
+  legPts[0] = shift(legPts[0], -1); legPts[legPts.length - 1] = shift(legPts[legPts.length - 1], 2.5);
+  ob.addTrace(legPts, 40);
+  ok(Math.abs(ob.distance - L0) < 60, `tracing along one leg of an out & back keeps the turnaround: ${(L0 / 1000).toFixed(3)} -> ${(ob.distance / 1000).toFixed(3)} km`);
+}
 const L3 = ed.distance;
 ed.outAndBack(); ok(Math.abs(ed.distance - 2 * L3) < 1 && D(ed.end, ed.start) < 1, `out & back doubles: ${(ed.distance / 1000).toFixed(3)} km`); ed.undo();
 ed.closeLoop(); ok(D(ed.end, ed.start) < 1 && ed.distance > L3, `close loop returns to start: ${(ed.distance / 1000).toFixed(3)} km`); ed.undo();
