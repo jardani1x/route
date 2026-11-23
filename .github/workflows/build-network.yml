@@ -9,6 +9,7 @@ on:
   push:                    # and whenever the builder itself changes
     paths:
       - scripts/build_network.py
+      - scripts/check_network.py
       - .github/workflows/build-network.yml
 
 permissions:
@@ -46,34 +47,28 @@ jobs:
           done
           [ -n "$SRC" ] || { echo "::error::No OSM mirror reachable"; exit 1; }
           echo "OSM_SOURCE=$SRC" >> "$GITHUB_ENV"
-          # Singapore's national boundary from OSM, found by its country code; fall back to a bounding box
-          osmium tags-filter src.osm.pbf r/ISO3166-1:alpha2=SG -o sg-boundary.osm.pbf --overwrite || true
-          echo "::notice::boundary relations found: $(osmium fileinfo -e sg-boundary.osm.pbf 2>/dev/null | grep -E 'Number of relations' | xargs)"
-          WAYS=0
-          if osmium extract -p sg-boundary.osm.pbf src.osm.pbf -o sg.osm.pbf --overwrite; then
-            WAYS=$(osmium fileinfo -e -g data.count.ways sg.osm.pbf)
-          fi
-          if [ "${WAYS:-0}" -gt 50000 ]; then
-            echo "CLIP=Singapore boundary (ISO3166-1:alpha2=SG)" >> "$GITHUB_ENV"
-          else
-            echo "::warning::Boundary clip gave ${WAYS:-0} ways; using a bounding box"
-            osmium extract -b 103.59,1.15,104.10,1.48 src.osm.pbf -o sg.osm.pbf --overwrite
-            echo "CLIP=bounding box" >> "$GITHUB_ENV"
-          fi
+          # A bounding box around Singapore; the builder then keeps only what is on Singapore's land (URA regions)
+          osmium extract -b 103.59,1.15,104.10,1.48 --strategy complete_ways src.osm.pbf -o sg.osm.pbf --overwrite
           echo "::notice::$(osmium fileinfo -e sg.osm.pbf | grep -E 'Number of ways' | xargs)"
 
-      - name: Download NParks Park Connector Loop (data.gov.sg)
+      - name: Download NParks park connectors and URA land boundary (data.gov.sg)
         run: |
-          url=$(curl -sSf --retry 3 --retry-delay 10 https://api-open.data.gov.sg/v1/public/api/datasets/d_a69ef89737379f231d2ae93fd1c5707f/poll-download \
-                | python -c "import sys, json; d = json.load(sys.stdin); assert d['code'] == 0, d; print(d['data']['url'])")
-          curl -sSfL -o pcn.geojson "$url"
-          echo "::notice::$(python -c "import json; print(len(json.load(open('pcn.geojson'))['features']), 'park connector features')")"
+          get() {  # data.gov.sg dataset id -> file
+            url=$(curl -sSf --retry 3 --retry-delay 10 "https://api-open.data.gov.sg/v1/public/api/datasets/$1/poll-download" \
+                  | python -c "import sys, json; d = json.load(sys.stdin); assert d['code'] == 0, d; print(d['data']['url'])")
+            curl -sSfL --retry 3 -o "$2" "$url"
+            echo "::notice::$2: $(python -c "import json, sys; print(len(json.load(open(sys.argv[1]))['features']), 'features')" "$2")"
+          }
+          get d_a69ef89737379f231d2ae93fd1c5707f pcn.geojson      # NParks Park Connector Loop
+          sleep 5
+          get d_bf4d24df9129d5a8ff8cf82e20959ee0 land.geojson     # URA Master Plan 2019 Region Boundary (No Sea)
 
       - name: Build
         run: |
-          python scripts/build_network.py --osm sg.osm.pbf --pcn pcn.geojson --out data/net-v2.json --stats data/stats.json
-          python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = '$CLIP'; s['osm_source'] = '$OSM_SOURCE'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
-          echo "::notice::$(python -c "import json; s = json.load(open('data/stats.json')); print({k: s[k] for k in ('edges', 'km_by_kind', 'file_mb', 'file_gzip_mb', 'pcn_dataset_covered_by_osm_pct', 'components')})")"
+          python scripts/build_network.py --osm sg.osm.pbf --pcn pcn.geojson --land land.geojson --out data/net-v2.json --stats data/stats.json
+          python scripts/check_network.py data/net-v2.json
+          python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = 'URA region boundaries (no sea) + 150 m'; s['osm_source'] = '$OSM_SOURCE'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
+          echo "::notice::$(python -c "import json; s = json.load(open('data/stats.json')); print({k: s.get(k) for k in ('edges', 'file_gzip_mb', 'outside_land_km_dropped', 'pcn_with_osm_way_within_12m_pct', 'pcn_marked_as_park_connector_pct', 'roads_mode_pcn_reachable_pct', 'components')})")"
 
       - name: Publish (main -> data/network-v2, other branches -> data/network-v2-preview)
         run: |
@@ -85,5 +80,5 @@ jobs:
           git rm -rfq --cached . && rm -rf ./* .github .gitignore .nojekyll 2>/dev/null || true
           mkdir -p data && cp /tmp/net-v2.json /tmp/stats.json data/
           git add data/net-v2.json data/stats.json
-          git commit -qm "Network build $(date -u +%F) from ${GITHUB_REF_NAME} (${CLIP})"
+          git commit -qm "Network build $(date -u +%F) from ${GITHUB_REF_NAME}"
           git push -f origin "$TARGET"
