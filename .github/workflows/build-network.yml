@@ -33,30 +33,42 @@ jobs:
       - name: Builder unit test
         run: python tests/test_build_network.py
 
-      - name: Download OpenStreetMap (Geofabrik) and cut out Singapore
+      - name: Download OpenStreetMap and cut out Singapore
         run: |
-          curl -sSfL -o msb.osm.pbf https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf
+          fetch() { curl -sSfL --retry 3 --retry-delay 10 --connect-timeout 30 -o src.osm.pbf "$1"; }
+          SRC=""
+          for url in \
+            https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf \
+            https://download.openstreetmap.fr/extracts/asia/singapore-latest.osm.pbf \
+            https://download.bbbike.org/osm/bbbike/Singapore/Singapore.osm.pbf; do
+            if fetch "$url"; then SRC="$url"; echo "::notice::OSM source: $url ($(du -h src.osm.pbf | cut -f1))"; break
+            else echo "::warning::OSM download failed (curl exit $?): $url"; fi
+          done
+          [ -n "$SRC" ] || { echo "::error::No OSM mirror reachable"; exit 1; }
+          echo "OSM_SOURCE=$SRC" >> "$GITHUB_ENV"
           # Singapore's national boundary from OSM (relation 536780); fall back to a bounding box
-          if osmium getid -r msb.osm.pbf r536780 -o sg-boundary.osm.pbf --overwrite \
-             && osmium extract -p sg-boundary.osm.pbf msb.osm.pbf -o sg.osm.pbf --overwrite; then
+          if osmium getid -r src.osm.pbf r536780 -o sg-boundary.osm.pbf --overwrite \
+             && osmium extract -p sg-boundary.osm.pbf src.osm.pbf -o sg.osm.pbf --overwrite; then
             echo "CLIP=boundary relation 536780" >> "$GITHUB_ENV"
           else
-            osmium extract -b 103.59,1.15,104.10,1.48 msb.osm.pbf -o sg.osm.pbf --overwrite
+            echo "::warning::Boundary clip failed; using a bounding box"
+            osmium extract -b 103.59,1.15,104.10,1.48 src.osm.pbf -o sg.osm.pbf --overwrite
             echo "CLIP=bounding box" >> "$GITHUB_ENV"
           fi
-          osmium fileinfo -e sg.osm.pbf | grep -E "Number of (nodes|ways)|Timestamps" || true
+          echo "::notice::$(osmium fileinfo -e sg.osm.pbf | grep -E 'Number of ways' | xargs)"
 
       - name: Download NParks Park Connector Loop (data.gov.sg)
         run: |
-          url=$(curl -sSf https://api-open.data.gov.sg/v1/public/api/datasets/d_a69ef89737379f231d2ae93fd1c5707f/poll-download \
+          url=$(curl -sSf --retry 3 --retry-delay 10 https://api-open.data.gov.sg/v1/public/api/datasets/d_a69ef89737379f231d2ae93fd1c5707f/poll-download \
                 | python -c "import sys, json; d = json.load(sys.stdin); assert d['code'] == 0, d; print(d['data']['url'])")
           curl -sSfL -o pcn.geojson "$url"
-          python -c "import json; print(len(json.load(open('pcn.geojson'))['features']), 'park connector features')"
+          echo "::notice::$(python -c "import json; print(len(json.load(open('pcn.geojson'))['features']), 'park connector features')")"
 
       - name: Build
         run: |
           python scripts/build_network.py --osm sg.osm.pbf --pcn pcn.geojson --out data/net-v2.json --stats data/stats.json
-          python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = '$CLIP'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
+          python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = '$CLIP'; s['osm_source'] = '$OSM_SOURCE'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
+          echo "::notice::$(python -c "import json; s = json.load(open('data/stats.json')); print({k: s[k] for k in ('edges', 'km_by_kind', 'file_mb', 'file_gzip_mb', 'pcn_dataset_covered_by_osm_pct', 'components')})")"
 
       - name: Publish (main -> data/network-v2, other branches -> data/network-v2-preview)
         run: |
