@@ -13,10 +13,15 @@ Output format "run-net-2": one JSON array, one record per line.
   record 0: meta {format, kinds, flags, names, built, sources, stats}
   record i: [kindByte, nameIdx, lat0E6, lon0E6, dlat1, dlon1, ...]
 kindByte = kind | flags.  Kinds (low 4 bits): 0 road · 1 park connector · 2 crossing · 3 path · 4 steps ·
-5 sidewalk · 6 service road.  Flags: 32 "estate" = a path, steps or service road inside a housing estate
-(OSM landuse=residential: HDB estates, condos), which the default "avoid housing estates" mode leaves out;
-16 "link" = one of those that the default mode may still use, because it is the way from a park connector
-to the street network. Paths inside schools, military land and prisons are dropped.
+5 sidewalk · 6 service road.  Flags: 32 "estate" = a path, steps or service road in a housing estate (HDB
+estates, condos, landed estates), which the default "avoid housing estates" mode leaves out; 16 "link" =
+one of those that the default mode may still use, because it is the way from a park connector to the
+street network. Paths inside schools, military land and prisons are dropped.
+
+A minor way is in a housing estate when its midpoint is (not in a park, and) inside OSM landuse=residential,
+or within 20 m of a residential building, or more than 12 m from any road inside a road-bounded block
+whose area is over 8% residential buildings. Tuned by eye on Bishan, Toa Payoh and Ang Mo Kio: landuse
+alone missed estates that OSM does not map as residential land; the block test alone swallowed parks.
 """
 import argparse, collections, datetime, gzip, heapq, json, os, sys, time
 
@@ -34,6 +39,8 @@ FOOT_OK = {'yes', 'designated', 'permissive'}
 KINDS = ['road', 'park connector', 'crossing', 'path', 'steps', 'sidewalk', 'service road']
 LINK, ESTATE = 16, 32
 MINOR = {3, 4, 6}                 # kinds that get the estate flag when they lie in a housing estate
+HOMES = {'residential', 'apartments', 'house', 'terrace', 'semidetached_house', 'detached', 'dormitory', 'bungalow'}
+NEAR_HOME_M, BLOCK_SHARE, BLOCK_INTERIOR_M = 20.0, 0.08, 12.0
 TO_M = Transformer.from_crs('EPSG:4326', 'EPSG:3414', always_xy=True)   # SVY21 metres
 SIMPLIFY_M = 1.0
 PCN_NEAR_M, PCN_SHARE = 12.0, 0.6  # a path is a park connector if >=60% of it lies within 12 m of the NParks line
@@ -71,11 +78,15 @@ def walkable(tags):
 
 
 def zone(tags):
-    """'estate' for housing, 'closed' for land the public cannot walk through, else None."""
+    """Which area list a closed way or multipolygon belongs to, if any."""
     if tags.get('landuse') == 'residential':
         return 'estate'
     if tags.get('amenity') in ('school', 'kindergarten', 'prison') or tags.get('landuse') == 'military':
         return 'closed'
+    if tags.get('leisure') in ('park', 'nature_reserve', 'garden') or tags.get('boundary') == 'national_park':
+        return 'park'
+    if tags.get('building') in HOMES or (tags.get('building') and tags.get('residential')):
+        return 'home'
     return None
 
 
@@ -83,7 +94,8 @@ class Ways(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
         self.ways = []          # (kind, name, [(ref, lat, lon), ...])
-        self.zones = {'estate': [], 'closed': []}   # shapely polygons (WGS84)
+        self.zones = {'estate': [], 'closed': [], 'park': [], 'home': []}   # shapely polygons (WGS84)
+        self.motorways = []     # lines that bound blocks but are not walkable
         self.newest = 0
         self._wkb = osmium.geom.WKBFactory()
 
@@ -98,6 +110,11 @@ class Ways(osmium.SimpleHandler):
     def way(self, w):
         kind = walkable(w.tags)
         if kind is None:
+            if w.tags.get('highway') in ('motorway', 'motorway_link'):
+                try:
+                    self.motorways.append([(n.lon, n.lat) for n in w.nodes])
+                except osmium.InvalidLocationError:
+                    pass
             return
         try:
             nodes = [(n.ref, n.lat, n.lon) for n in w.nodes]
@@ -315,23 +332,42 @@ def build(osm_path, pcn_path, land_path=None):
 
     # housing estates and closed land (schools, military, prisons): flag or drop minor ways inside them
     zones = {k: [to_m(g) for g in v] for k, v in h.zones.items()}
-    stats['estate_areas'] = len(zones['estate']); stats['closed_areas'] = len(zones['closed'])
+    for k, v in zones.items():
+        stats[f'{k}_areas'] = len(v)
     minor = [i for i, e in enumerate(edges) if e['kind'] in MINOR]
     if minor:
         mids = shapely.line_interpolate_point(np.array([edges[i]['g'] for i in minor], dtype=object), 0.5, normalized=True)
-        def inside(polys):
+        def mask(polys, predicate='within', distance=None):
             hit = np.zeros(len(minor), bool)
             if polys:
-                hit[STRtree(polys).query(mids, predicate='within')[0]] = True
+                kw = {'distance': distance} if distance is not None else {}
+                hit[STRtree(polys).query(mids, predicate=predicate, **kw)[0]] = True
             return hit
-        closed, estate = inside(zones['closed']), inside(zones['estate'])
+        # road-bounded blocks (streets + expressways) and the share of each covered by homes
+        lines = [e['g'] for e in edges if e['kind'] == 0]
+        for c in h.motorways:
+            if len(c) > 1:
+                xs, ys = TO_M.transform([p[0] for p in c], [p[1] for p in c]); lines.append(LineString(list(zip(xs, ys))))
+        blocks = list(shapely.get_parts(shapely.polygonize(shapely.get_parts(shapely.union_all(lines))))) if lines else []
+        in_dense_block = np.zeros(len(minor), bool)
+        if blocks and zones['home']:
+            btree = STRtree(blocks)
+            homes = np.array(zones['home'], dtype=object)
+            hb = btree.query(shapely.point_on_surface(homes), predicate='within')
+            share = np.bincount(hb[1], weights=shapely.area(homes)[hb[0]], minlength=len(blocks)) / shapely.area(np.array(blocks, dtype=object))
+            mb = btree.query(mids, predicate='within')
+            dense = np.zeros(len(minor), bool); dense[mb[0][share[mb[1]] > BLOCK_SHARE]] = True
+            near_road = np.zeros(len(minor), bool); near_road[STRtree(lines).query(mids, predicate='dwithin', distance=BLOCK_INTERIOR_M)[0]] = True
+            in_dense_block = dense & ~near_road
+        estate = (mask(zones['estate']) | mask(zones['home'], 'dwithin', NEAR_HOME_M) | in_dense_block) & ~mask(zones['park'])
+        closed = mask(zones['closed'])
         for j, i in enumerate(minor):
             if estate[j]:
                 edges[i]['flags'] |= ESTATE
         drop = {minor[j] for j in np.flatnonzero(closed)}
         stats['closed_land_km_dropped'] = round(sum(edges[i]['len'] for i in drop) / 1000, 1)
+        stats['blocks'] = len(blocks)
         edges = [e for i, e in enumerate(edges) if i not in drop]
-        stats['estate_km'] = round(sum(e['len'] for e in edges if e['flags'] & ESTATE) / 1000, 1)
 
     # park connectors: paths and sidewalks that run along the NParks line for most of their length
     pcn_lines, pcn_names = load_pcn(pcn_path)
@@ -356,6 +392,7 @@ def build(osm_path, pcn_path, land_path=None):
                 if not e['name'] and k in line:
                     e['name'] = pcn_names[line[k]]
     print(f'park connectors classified ({time.time() - t0:.0f}s)', flush=True)
+    stats['estate_km'] = round(sum(e['len'] for e in edges if e['flags'] & ESTATE) / 1000, 1)
 
     edges, dropped = prune_small(edges)
     stats['small_pieces_km_dropped'] = round(dropped / 1000, 1)
