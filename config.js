@@ -9,12 +9,6 @@ window.RP_CONFIG = {
       minZoom: 11, maxZoom: 19,
       attribution: '<a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener">OneMap</a> © contributors | <a href="https://www.sla.gov.sg/" target="_blank" rel="noopener">Singapore Land Authority</a>',
     },
-    osm: {
-      label: 'OpenStreetMap',
-      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      minZoom: 3, maxZoom: 19,
-      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
-    },
     satellite: {
       label: 'Satellite (Esri)',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -27,6 +21,7 @@ window.RP_CONFIG = {
   // OneMap address search (no key needed)
   searchUrl: 'https://www.onemap.gov.sg/api/common/elastic/search',
   networkUrl: 'net.json',
+  closuresUrl: 'closures.json',
   center: [1.3521, 103.8198],
   zoom: 12,
 };

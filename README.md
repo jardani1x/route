@@ -1,7 +1,7 @@
-# Jalan Route Planner (v0.1, basic)
+# Jalan Route Planner (v0.2)
 
 A browser route planner for walking, running and cycling in Singapore, modelled on the free
-("Basic") tier of the Footpath app. Trace a line and it snaps to roads and park connectors, or
+("Basic") tier of the Footpath app. Walking and running only for now. Trace a line and it snaps to roads and park connectors, or
 tap points and it routes between them.
 
 ## Run it
@@ -31,16 +31,20 @@ Opening `index.html` straight from disk (`file://`) does not work, because the b
 | Move the map while drawing | Right-drag (or middle-drag), or hold Space and drag; two fingers to pan and pinch on touch screens (one finger keeps drawing) |
 | Finish route | Out & back, close loop, reverse, trim to a distance |
 | Measure distance | km or miles, distance markers, time from your pace per activity |
-| Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m DEM), climb total, hover chart to see the spot on the map |
+| Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m surface model), smoothed over ~270 m so roofs and trees are not counted as climb; hover the chart to see the spot on the map |
 | Route waypoints | Waypoint tool (K): name + notes, draggable, exported to GPX |
-| Save routes / sync | Saved in the browser (localStorage); inside claude.ai they sync to your account |
+| Save routes / sync | Saved in this browser (localStorage); sync across devices is planned |
 | Share routes | "Copy share link" encodes the route in the URL |
 | Import GPX | Button or drag-and-drop |
-| Basic street & satellite maps | OneMap, OpenStreetMap, Esri satellite, plus a built-in offline map |
+| Basic street & satellite maps | OneMap street, Esri satellite, plus a built-in offline map |
 | Search | Streets and park connectors offline; OneMap address search online |
 | Show my location | One-off locate (needs HTTPS) |
 
 Also included although Footpath charges for it: GPX export.
+
+Closures: `closures.json` lists known closures with start and end dates. Active ones are drawn
+dashed red, the planner warns when a route goes through one, and "Route around closures"
+(on by default) keeps new routes out of them.
 
 Not built yet (Footpath Elite or beyond Basic): cue sheets, turn-by-turn voice navigation, live GPS
 tracking along the route, lists/folders, merge/duplicate/split routes, slope colouring,
@@ -55,6 +59,7 @@ tracking along the route, lists/folders, merge/duplicate/split routes, slope col
 | `engine.js` | Route editing: trace matching, eraser, replace, finish actions, undo/redo, share codec |
 | `core.js` | Network loading, spatial index, snapping, A* routing, GPX/ZIP helpers |
 | `config.js` | Tile, elevation and search endpoints (edit when self-hosting) |
+| `closures.json` | Known closures with dates and approximate extents |
 | `net.json` | Singapore walk network: named streets (expressways and flyovers removed) + NParks park connectors, with dual carriageways linked |
 | `leaflet.js`, `leaflet.css` | Leaflet 1.9.4 |
 
@@ -63,13 +68,15 @@ tracking along the route, lists/folders, merge/duplicate/split routes, slope col
 - The network has named streets and park connectors only. Unnamed footpaths, linkways and
   trails inside parks are missing, so snapping prefers roads where a footpath would be better.
 - Routes follow road centrelines, so they sit a few metres off the pavement.
-- The Kallang park connector closure at St Andrew's Village / St Michael's estate (NParks,
-  until 2H 2027) is avoided by default; its extent is approximated.
+- Closure extents in `closures.json` are drawn by hand from NParks notices, so they are approximate.
 - Elevation uses a 90 m terrain model: good for trends, not for exact climb on short hills.
-- Tile servers have usage policies: OpenStreetMap's tiles are for light use only, and Esri
-  imagery needs attribution. For heavy use, switch `config.js` to a tile provider you have a key for.
+- Esri imagery comes with its own terms of use. For heavy use, switch `config.js` to a tile
+  provider you have a key for.
 
 ## Data and licences
+
+See `DATA_LICENSE.md`. `net.json` is a Derived Database of OpenStreetMap under the ODbL 1.0.
+
 
 - Streets: © OpenStreetMap contributors, ODbL (via github.com/evgeniyarbatov/singapore-streets).
 - Park connectors: NParks, Singapore Open Data Licence (via data.gov.sg).
@@ -77,6 +84,9 @@ tracking along the route, lists/folders, merge/duplicate/split routes, slope col
 - Elevation: Open-Meteo (CC BY 4.0).
 
 ## Tests
+
+GitHub Actions (`.github/workflows/test.yml`) runs all three on every pull request and every push to `main`.
+
 
 `tests/test_engine.js` (Node: `node tests/test_engine.js`) checks trace matching against a known 5 km route with hand jitter,
 plus every editor operation and the codecs. `tests/smoke.py` (Playwright, with the site served on port 8766) drives the page:

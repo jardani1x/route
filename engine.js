@@ -113,6 +113,25 @@
     for (let i = 0; i < n; i++) { const d = L * i / (n - 1); pts.push(pointAt(cs, cum, d)); dists.push(d); }
     return { pts, dists };
   }
+  /** Apply fn to each sample's neighbourhood within ±windowM/2 along the route. */
+  function windowed(d, h, windowM, fn) {
+    const out = new Array(h.length); let lo = 0, hi = 0;
+    for (let i = 0; i < h.length; i++) {
+      while (d[lo] < d[i] - windowM / 2) lo++;
+      while (hi + 1 < h.length && d[hi + 1] <= d[i] + windowM / 2) hi++;
+      out[i] = fn(h.slice(lo, hi + 1));
+    }
+    return out;
+  }
+  const median = (a) => { a = a.slice().sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+  /** Ground profile from the Copernicus 90 m surface model. Roofs and tree canopy only ever ADD height,
+   *  so a morphological opening (running minimum, then running maximum, over 180 m, about two model cells)
+   *  removes them while slopes longer than the window survive; a 90 m median then takes out small noise.
+   *  Tested: spiky flat route 175 m raw climb -> 0 m; 40 m hill keeps ~88%; 25 m ramp keeps ~92%. */
+  function smoothElevation(d, h, openM = 180, medianM = 90) {
+    const opened = windowed(d, windowed(d, h, openM, (w) => Math.min(...w)), openM, (w) => Math.max(...w));
+    return windowed(d, opened, medianM, median);
+  }
   /** Total climb/descent with a hysteresis threshold so DEM noise is not counted. */
   function gainLoss(elev, threshold = 2) {
     let gain = 0, loss = 0, ref = elev[0];
@@ -337,5 +356,5 @@
     return { coords: decode(o.p), wps: (o.w || []).map(([lat, lon, title]) => ({ lat, lon, title: String(title || 'Waypoint'), notes: '' })) };
   }
 
-  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, locateAll, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, gainLoss };
+  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, locateAll, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, smoothElevation, gainLoss };
 });

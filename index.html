@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Saira+Semi+Condensed:wght@600;700&display=swap">
 <link rel="stylesheet" href="leaflet.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%230f766e%27/%3E%3Cpath d=%27M7 23c4-1 5-8 9-8s4 5 9 3%27 fill=%27none%27 stroke=%27%23ff5a1f%27 stroke-width=%273.5%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
 <style>
 /* Layout idea: full-bleed map; floating cards like a map app — search + activity top-left, tools down the left edge,
    undo/redo bottom-left, route stats with elevation along the bottom, menu and map controls on the right. */
@@ -106,6 +107,9 @@ button { cursor: pointer; }
 .chart .msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12.5px; color: var(--muted); text-align: center; padding: 0 10px; }
 .chart .tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--ink); color: var(--card); font-size: 12px; padding: 3px 7px; border-radius: 6px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
 .hintline { font-size: 13px; color: var(--muted); }
+.warnline { margin: 0; font-size: 13px; font-weight: 600; color: var(--danger); }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.chart .msg { pointer-events: auto; }
 
 /* right side */
 .topright { top: calc(env(safe-area-inset-top) + 12px); right: 12px; display: flex; gap: 8px; }
@@ -200,7 +204,6 @@ dialog textarea { min-height: 70px; resize: vertical; }
     <select id="activity" aria-label="Activity">
       <option value="walk">Walking</option>
       <option value="run" selected>Running</option>
-      <option value="cycle">Cycling</option>
     </select>
   </div>
   <div class="results" id="results" role="listbox" hidden></div>
@@ -231,9 +234,10 @@ dialog textarea { min-height: 70px; resize: vertical; }
   <div class="statrow">
     <div class="stat"><span class="v" id="statDist">0.00<small>km</small></span><span class="l">Distance</span></div>
     <div class="stat small"><span class="v" id="statTime">0:00</span><span class="l" id="statTimeLabel">Running time</span></div>
-    <div class="stat small"><span class="v" id="statGain">–</span><span class="l">Climb</span></div>
+    <div class="stat small"><span class="v" id="statGain">–</span><span class="l">Climb (approx.)</span></div>
     <button type="button" class="finishbtn" id="finishBtn" aria-haspopup="menu">Finish route</button>
   </div>
+  <p class="warnline" id="closureWarn" role="alert" hidden></p>
   <div class="chart" id="chart" aria-label="Elevation profile"><div class="msg" id="chartMsg">Tap the map to start a route, or press Draw and trace it.</div></div>
 </section>
 
@@ -278,13 +282,13 @@ dialog textarea { min-height: 70px; resize: vertical; }
     <div class="field"><label for="pace">Pace for <span id="paceAct">running</span> (min:sec per <span id="paceUnit">km</span>)</label><input id="pace" type="text" inputmode="numeric"></div>
     <label class="check" for="showPcn"><input type="checkbox" id="showPcn" checked><span>Show park connectors on the map</span></label>
     <label class="check" for="preferPcn"><input type="checkbox" id="preferPcn" checked><span>Prefer park connectors when snapping a tap</span></label>
-    <label class="check" for="avoidClosures"><input type="checkbox" id="avoidClosures" checked><span>Avoid the Kallang park connector closure at St Andrew's Village and St Michael's estate (NParks, until 2nd half 2027; extent approximated)</span></label>
+    <label class="check" for="avoidClosures"><input type="checkbox" id="avoidClosures" checked><span>Route around closures<br><span class="small">Closed stretches are dashed red on the map; hover or tap one for its dates. Extents are approximate, so check signs on site.</span></span></label>
   </section>
   <section>
     <h3>How it works</h3>
     <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
-    <p class="small">Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors, drawn on centrelines. Unnamed footpaths are not in the network yet. Elevation comes from a 90 m terrain model, so treat it as a guide.</p>
-    <p class="small">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>; park connectors © NParks via data.gov.sg; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.</p>
+    <p class="small">Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors, drawn on centrelines. Unnamed footpaths are not in the network yet. Elevation comes from a 90 m surface model (it includes roofs and trees), smoothed over about 270 m, so treat the climb as a guide.</p>
+    <p class="small">Routing data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL); park connectors © NParks via data.gov.sg (Singapore Open Data Licence); basemap © OneMap / Singapore Land Authority; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0). <a href="https://github.com/jardani1x/route" target="_blank" rel="noopener">Source and data licence</a>.</p>
   </section>
 </aside>
 
