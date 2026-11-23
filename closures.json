@@ -8,7 +8,7 @@
     "until": "2027-12-31",
     "untilLabel": "2nd half of 2027",
     "accuracy": "approximate",
-    "kinds": ["park connector", "path", "steps"],
+    "kinds": ["park connector"],
     "polygon": [[1.335786, 103.862072], [1.335786, 103.867464], [1.324301, 103.867464], [1.324301, 103.862072]]
   }
 ]

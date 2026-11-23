@@ -16,6 +16,7 @@
   const KIND_LABEL = ['Road', 'Park connector', 'Crossing', 'Path', 'Steps', 'Sidewalk', 'Service road'];
   const LINK = 16, ESTATE = 32;
   const STEPS_FACTOR = 1.3;             // steps cost a little more than their length
+  const AVOID_FACTOR = 8;               // opts.avoid edges (a stretch just erased): take another way if one is < 8x longer
 
   function mDist(lat1, lon1, lat2, lon2) {
     const kx = KX0 * Math.cos(((lat1 + lat2) / 2) * Math.PI / 180);
@@ -208,8 +209,8 @@
 
     weight(e, opts) {
       if (this.blocked[e] || !this.allowed(e, opts.profile)) return Infinity;
-      const k = this.eKind[e];
-      return k === 1 ? (opts.pcnFactor || 1) : k === 4 ? STEPS_FACTOR : 1;
+      const k = this.eKind[e], w = k === 1 ? (opts.pcnFactor || 1) : k === 4 ? STEPS_FACTOR : 1;
+      return opts.avoid && opts.avoid.has(e) ? w * AVOID_FACTOR : w;
     }
 
     /** A* between two snapped points. Returns {parts:[{edge,t0,t1}], length} or null. */

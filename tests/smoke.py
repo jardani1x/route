@@ -75,8 +75,10 @@ async def run_a(p):
     await pg.evaluate("() => { const J = window.__jalan, cs = J.editor.coords, c = window.RouteEngine.geo.cumul(cs); J.map.setView(window.RouteEngine.geo.pointAt(cs, c, c[cs.length-1]*0.5), 17, {animate: false}); }"); await pg.wait_for_timeout(300)
     mid = await pg.evaluate("() => { const J = window.__jalan, cs = J.editor.coords, c = window.RouteEngine.geo.cumul(cs); const p = window.RouteEngine.geo.pointAt(cs, c, c[cs.length-1]*0.5); const q = J.map.latLngToContainerPoint(p); return [q.x, q.y]; }")
     b0 = await dist(pg); await drag(pg, [[mid[0] - 25, mid[1] - 25], [mid[0], mid[1]], [mid[0] + 25, mid[1] + 25]]); r['erase_middle_change_m'] = round(await dist(pg) - b0)
+    # the gap is joined another way; where there is none within 8x the erased length, the route keeps it and says so
+    r['erase_note'] = await pg.text_content('#toast') if await pg.is_visible('#toast') else ''
     await pg.click('#undoBtn'); r['undo_restores'] = abs(await dist(pg) - b0) < 0.01
-    await pg.click('#redoBtn'); r['redo_reapplies'] = abs(await dist(pg) - b0) > 1
+    await pg.click('#redoBtn'); r['redo_reapplies'] = abs(await dist(pg) - b0) > 1 if r['erase_middle_change_m'] else None
     await pg.click('#undoBtn')
     # keyboard: Escape back to pan, Shift toggles snap
     await pg.keyboard.press('Escape'); r['tool_after_escape'] = await pg.get_attribute('#toolErase', 'aria-pressed')
@@ -155,7 +157,8 @@ CHECKS = [
     ('A', 'two_taps_km', lambda v: 0.6 < v < 1.1),
     ('A', 'draw_added_m', lambda v: v > 700),
     ('A', 'undo_restores', lambda v: v is True),
-    ('A', 'redo_reapplies', lambda v: v is True),
+    ('A', 'redo_reapplies', lambda v: v is not False),
+    ('A', 'erase_note', lambda v: 'no other way' in v if results['A'].get('erase_middle_change_m') == 0 else True),
     ('A', 'out_back_ratio', lambda v: abs(v - 2) < 0.01),
     ('A', 'waypoints', lambda v: v == ['Water point']),
     ('A', 'saved_list', lambda v: 'Test loop' in v),

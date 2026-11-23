@@ -8,7 +8,7 @@
   const $ = (s) => document.querySelector(s);
 
   // ---------------- constants & state ----------------
-  const EXAMPLE = { name: 'Example: Bishan Rd to Kallang PCN, out & back', taps: [[1.35707, 103.85017], [1.34349, 103.85733]] };
+  const EXAMPLE = { name: 'Example: Bishan Rd to Kallang PCN, out & back', taps: [[1.35707, 103.85017], [1.34349, 103.85738]] };
   const ACT = { walk: { label: 'Walking', pace: 720 }, run: { label: 'Running', pace: 360 } };
   const MI = 1609.344;
   const LS = 'jalan.v1.';
@@ -24,7 +24,7 @@
   // ---------------- small UI helpers ----------------
   let toastT = 0;
   function toast(msg, ms = 3200) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
-  const report = (r) => { if (r && !r.ok && r.msg) toast(r.msg); return r; };
+  const report = (r) => { if (r && (!r.ok || r.note) && (r.msg || r.note)) toast(r.msg || r.note); return r; };
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const fmtDist = (m, dp = 2) => (S.units === 'mi' ? (m / MI).toFixed(dp) : (m / 1000).toFixed(dp));
   const unitLabel = () => (S.units === 'mi' ? 'mi' : 'km');
@@ -92,14 +92,19 @@
       const z = c.z, sc = Math.pow(2, z), ox = c.x * TILE, oy = c.y * TILE, pad = 24, roads = this.options.roads;
       const n = unmercY((oy - pad) / sc), s = unmercY((oy + TILE + pad) / sc), w = (ox - pad) / sc / TILE * 360 - 180, e = (ox + TILE + pad) / sc / TILE * 360 - 180;
       const ids = net.edgesIn(s, w, n, e), th = themeColors();
-      const isRoad = (id) => net.eKind[id] === 0 || net.eKind[id] === 6, isPcn = (id) => net.eKind[id] === 1;
+      const isRoad = (id) => net.eKind[id] === 0, isService = (id) => net.eKind[id] === 6, isPcn = (id) => net.eKind[id] === 1;
       const isPath = (id) => { const k = net.eKind[id]; return k === 2 || k === 3 || k === 4 || k === 5; };
       if (roads && z >= 15 && net.hasPaths) {  // footpaths, pavements, crossings and steps under the roads
         ctx.strokeStyle = th.path; ctx.lineWidth = z >= 17 ? 1.6 : 1; ctx.setLineDash(z >= 16 ? [3, 3] : []);
         strokeEdges(ctx, ids, sc, ox, oy, isPath); ctx.setLineDash([]);
       }
       if (roads) {
-        if (z >= 15) { const rw = z >= 18 ? 9 : z >= 17 ? 7 : z >= 16 ? 5 : 3.2; ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, ox, oy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, ox, oy, isRoad); }
+        if (z >= 15) {
+          const rw = z >= 18 ? 9 : z >= 17 ? 7 : z >= 16 ? 5 : 3.2, sw = rw * 0.55;  // service roads drawn narrower
+          ctx.strokeStyle = th.casing; ctx.lineWidth = sw + 1.4; strokeEdges(ctx, ids, sc, ox, oy, isService);
+          ctx.strokeStyle = th.fill; ctx.lineWidth = sw; strokeEdges(ctx, ids, sc, ox, oy, isService);
+          ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, ox, oy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, ox, oy, isRoad);
+        }
         else { ctx.strokeStyle = th.road; ctx.lineWidth = z >= 14 ? 1.6 : z >= 13 ? 1.1 : 0.7; strokeEdges(ctx, ids, sc, ox, oy, isRoad); }
       }
       if (this.options.pcn) {
@@ -124,7 +129,7 @@
     if (tilesBlocked || tl !== activeBase) return;
     if (tl._stats.error >= 4 && tl._stats.load === 0) {
       tilesBlocked = true; setBasemap('offline', true);
-      showBanner('Online map tiles cannot load here, so this is the built-in offline map of roads and park connectors.');
+      showBanner('Online map tiles cannot load here, so this is the built-in offline map of streets, paths and park connectors.');
     }
   }
   function setBasemap(id, auto) {
@@ -155,7 +160,7 @@
     const el = map.getContainer(); el.classList.remove('tool-draw', 'tool-erase', 'tool-waypoint'); if (tool !== 'pan') el.classList.add('tool-' + tool);
     const drawing = tool === 'draw' || tool === 'erase';
     if (drawing && !spacePan) { map.dragging.disable(); el.style.touchAction = 'none'; } else { map.dragging.enable(); el.style.touchAction = drawing ? 'none' : ''; }
-    showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of roads and park connectors.' : ''));
+    showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of streets, paths and park connectors.' : ''));
     if (editor) renderRoute();
   }
   function setSnap(v) { editor.snap = v; $('#toolSnap').setAttribute('aria-pressed', String(v)); toast(v ? 'Snap to roads and paths: on' : 'Snap off: lines go exactly where you draw', 1800); }
@@ -276,7 +281,7 @@
     const danger = cssVar('--danger');
     for (const c of closures) {
       // kinds by name ("park connector", "path", "steps"...) so the file works with either network format
-      const kinds = (c.kinds || ['park connector', 'path', 'steps']).map(k => typeof k === 'number' ? k : RC.KIND_LABEL.findIndex(l => l.toLowerCase() === String(k).toLowerCase()));
+      const kinds = (c.kinds || ['park connector']).map(k => typeof k === 'number' ? k : RC.KIND_LABEL.findIndex(l => l.toLowerCase() === String(k).toLowerCase()));
       c.edges = net.setBlockedFromPolygons([c.polygon], kinds);
       for (const e of c.edges) {
         net.blocked[e] = 1;
@@ -448,7 +453,7 @@
   function renderLayersPop() {
     const pop = $('#layersPop'); pop.textContent = '';
     const h = document.createElement('h4'); h.textContent = 'Map'; pop.appendChild(h);
-    const opts = Object.entries(CFG.basemaps).map(([id, b]) => [id, b.label]).concat([['offline', 'Offline (roads + park connectors)']]);
+    const opts = Object.entries(CFG.basemaps).map(([id, b]) => [id, b.label]).concat([['offline', 'Offline (streets, paths, park connectors)']]);
     for (const [id, label] of opts) {
       const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', 'menuitemradio');
       const on = (activeBase === offlineBase ? 'offline' : Object.keys(tileLayers).find(k => tileLayers[k] === activeBase)) === id;
@@ -698,7 +703,7 @@
     if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { loadRoute(cs, draft.wps || []); opened = true; } }
     if (!opened) renderRoute();
     $('#loading').hidden = true;
-    if (tilesBlocked) showBanner('Offline map of roads and park connectors.');
+    if (tilesBlocked) showBanner('Offline map of streets, paths and park connectors.');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { offlineBase.redraw(); pcnOverlay.redraw(); });
   }
   if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // automated tests only

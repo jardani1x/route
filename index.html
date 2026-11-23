@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Jalan Route Planner</title>
-<meta name="description" content="Plan walking, running and cycling routes in Singapore: trace a line and it snaps to roads and park connectors.">
+<meta name="description" content="Plan walking and running routes in Singapore: trace a line and it snaps to streets, footpaths and park connectors.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Saira+Semi+Condensed:wght@600;700&display=swap">
@@ -287,7 +287,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
   </section>
   <section>
     <h3>How it works</h3>
-    <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
+    <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to streets, footpaths and park connectors (see <b>Route along</b> above). Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap another way. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
     <p class="small" id="networkNote">Routing uses OpenStreetMap streets, pavements and footpaths (expressways left out) and NParks park connectors. Elevation comes from a 90 m surface model (it includes roofs and trees), smoothed over about 270 m, so treat the climb as a guide.</p>
     <p class="small">Routing data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL); park connectors © NParks via data.gov.sg (Singapore Open Data Licence); basemap © OneMap / Singapore Land Authority; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0). <a href="https://github.com/jardani1x/route" target="_blank" rel="noopener">Source and data licence</a>.</p>
   </section>
@@ -314,7 +314,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <div class="dropzone" id="dropzone" hidden>Drop a GPX file to open it</div>
-<div class="loading" id="loading">Loading Singapore's roads and park connectors…</div>
+<div class="loading" id="loading">Loading Singapore's streets, footpaths and park connectors…</div>
 
 <script src="config.js"></script>
 <script src="leaflet.js"></script>
