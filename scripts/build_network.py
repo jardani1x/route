@@ -13,8 +13,10 @@ Output format "run-net-2": one JSON array, one record per line.
   record 0: meta {format, kinds, flags, names, built, sources, stats}
   record i: [kindByte, nameIdx, lat0E6, lon0E6, dlat1, dlon1, ...]
 kindByte = kind | flags.  Kinds (low 4 bits): 0 road · 1 park connector · 2 crossing · 3 path · 4 steps ·
-5 sidewalk · 6 service road.  Flag 16 "link": a path, steps or service road that joins a park connector
-to the street network; the "Roads & park connectors" mode may use it, otherwise it avoids kinds 3, 4, 6.
+5 sidewalk · 6 service road.  Flags: 32 "estate" = a path, steps or service road inside a housing estate
+(OSM landuse=residential: HDB estates, condos), which the default "avoid housing estates" mode leaves out;
+16 "link" = one of those that the default mode may still use, because it is the way from a park connector
+to the street network. Paths inside schools, military land and prisons are dropped.
 """
 import argparse, collections, datetime, gzip, heapq, json, os, sys, time
 
@@ -30,9 +32,8 @@ ROADS = {'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', '
 PATHS = {'footway', 'path', 'pedestrian', 'cycleway', 'track', 'bridleway', 'steps'}
 FOOT_OK = {'yes', 'designated', 'permissive'}
 KINDS = ['road', 'park connector', 'crossing', 'path', 'steps', 'sidewalk', 'service road']
-LINK = 16
-ROAD_MODE = {0, 1, 2, 5}          # kinds the "Roads & park connectors" mode uses without a link flag
-LINK_VIA = {3, 4, 6}              # kinds a link may be made of
+LINK, ESTATE = 16, 32
+MINOR = {3, 4, 6}                 # kinds that get the estate flag when they lie in a housing estate
 TO_M = Transformer.from_crs('EPSG:4326', 'EPSG:3414', always_xy=True)   # SVY21 metres
 SIMPLIFY_M = 1.0
 PCN_NEAR_M, PCN_SHARE = 12.0, 0.6  # a path is a park connector if >=60% of it lies within 12 m of the NParks line
@@ -69,11 +70,30 @@ def walkable(tags):
     return 0
 
 
+def zone(tags):
+    """'estate' for housing, 'closed' for land the public cannot walk through, else None."""
+    if tags.get('landuse') == 'residential':
+        return 'estate'
+    if tags.get('amenity') in ('school', 'kindergarten', 'prison') or tags.get('landuse') == 'military':
+        return 'closed'
+    return None
+
+
 class Ways(osmium.SimpleHandler):
     def __init__(self):
         super().__init__()
         self.ways = []          # (kind, name, [(ref, lat, lon), ...])
+        self.zones = {'estate': [], 'closed': []}   # shapely polygons (WGS84)
         self.newest = 0
+        self._wkb = osmium.geom.WKBFactory()
+
+    def area(self, a):
+        z = zone(a.tags)
+        if z:
+            try:
+                self.zones[z].append(shapely.from_wkb(self._wkb.create_multipolygon(a)))
+            except Exception:       # broken multipolygon in OSM: skip it
+                pass
 
     def way(self, w):
         kind = walkable(w.tags)
@@ -173,11 +193,16 @@ def prune_small(edges):
     return keep, sum(e['len'] for e in edges) - sum(e['len'] for e in keep)
 
 
+def road_mode_ok(e):
+    """Can the default mode (avoid housing estates) use this edge? Mirrors Network.allowed() in core.js."""
+    return not (e['flags'] & ESTATE) or bool(e['flags'] & LINK)
+
+
 def add_links(edges):
-    """Flag the paths, steps and service roads that join park connectors to the street network."""
+    """Flag the estate paths, steps and service roads that join park connectors to the street network."""
     g = Graph(edges)
-    def road_mode(i): return edges[i]['kind'] in ROAD_MODE or edges[i]['flags'] & LINK
-    def via(i): return edges[i]['kind'] in LINK_VIA and not edges[i]['flags'] & LINK
+    def road_mode(i): return road_mode_ok(edges[i])
+    def via(i): return not road_mode_ok(edges[i])
     def r_degree(v): return sum(1 for i in g.adj[v] if road_mode(i))
 
     def search(sources, is_target, max_m):
@@ -288,6 +313,26 @@ def build(osm_path, pcn_path, land_path=None):
         edges = [e for e, ok in zip(edges, inside) if ok]
         print(f'on land: {len(edges)} ({time.time() - t0:.0f}s)', flush=True)
 
+    # housing estates and closed land (schools, military, prisons): flag or drop minor ways inside them
+    zones = {k: [to_m(g) for g in v] for k, v in h.zones.items()}
+    stats['estate_areas'] = len(zones['estate']); stats['closed_areas'] = len(zones['closed'])
+    minor = [i for i, e in enumerate(edges) if e['kind'] in MINOR]
+    if minor:
+        mids = shapely.line_interpolate_point(np.array([edges[i]['g'] for i in minor], dtype=object), 0.5, normalized=True)
+        def inside(polys):
+            hit = np.zeros(len(minor), bool)
+            if polys:
+                hit[STRtree(polys).query(mids, predicate='within')[0]] = True
+            return hit
+        closed, estate = inside(zones['closed']), inside(zones['estate'])
+        for j, i in enumerate(minor):
+            if estate[j]:
+                edges[i]['flags'] |= ESTATE
+        drop = {minor[j] for j in np.flatnonzero(closed)}
+        stats['closed_land_km_dropped'] = round(sum(edges[i]['len'] for i in drop) / 1000, 1)
+        edges = [e for i, e in enumerate(edges) if i not in drop]
+        stats['estate_km'] = round(sum(e['len'] for e in edges if e['flags'] & ESTATE) / 1000, 1)
+
     # park connectors: paths and sidewalks that run along the NParks line for most of their length
     pcn_lines, pcn_names = load_pcn(pcn_path)
     pcn_tree = STRtree(pcn_lines)
@@ -307,7 +352,7 @@ def build(osm_path, pcn_path, land_path=None):
             for qi, li in zip(q[0], q[1]):
                 line.setdefault(int(qi), int(li))
             for k, j in enumerate(pcn_j):
-                e = edges[cand[j]]; e['kind'] = 1
+                e = edges[cand[j]]; e['kind'] = 1; e['flags'] &= ~ESTATE
                 if not e['name'] and k in line:
                     e['name'] = pcn_names[line[k]]
     print(f'park connectors classified ({time.time() - t0:.0f}s)', flush=True)
@@ -374,7 +419,7 @@ def write(recs, stats, path):
         for (pa, po), (ca, co) in zip(q[:-1], q[1:]):
             r += [ca - pa, co - po]
         rows.append(r)
-    meta = {'format': 'run-net-2', 'kinds': KINDS, 'flags': {'link': LINK}, 'names': names,
+    meta = {'format': 'run-net-2', 'kinds': KINDS, 'flags': {'link': LINK, 'estate': ESTATE}, 'names': names,
             'built': datetime.date.today().isoformat(), 'stats': stats,
             'sources': ['© OpenStreetMap contributors (ODbL 1.0)',
                         'NParks Park Connector Loop, data.gov.sg (Singapore Open Data Licence 1.0)',
