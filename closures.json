@@ -1,0 +1,14 @@
+[
+  {
+    "id": "nparks-kallang-pc-pie-link",
+    "title": "Kallang Park Connector: St Andrew's Village to St Michael's estate",
+    "detail": "Closed for construction of the PIE pedestrian-cycling link (NParks notice).",
+    "source": "https://pcn.nparks.gov.sg/notices",
+    "from": "2024-10-21",
+    "until": "2027-12-31",
+    "untilLabel": "2nd half of 2027",
+    "accuracy": "approximate",
+    "kinds": [1, 2],
+    "polygon": [[1.335786, 103.862072], [1.335786, 103.867464], [1.324301, 103.867464], [1.324301, 103.862072]]
+  }
+]

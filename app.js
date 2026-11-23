@@ -6,19 +6,18 @@
   const CFG = window.RP_CONFIG;
   const RC = window.RunCore, RE = window.RouteEngine;
   const $ = (s) => document.querySelector(s);
-  const IN_CLAUDE = !!(window.claude && window.claude.use);   // running as a claude.ai artifact page
 
   // ---------------- constants & state ----------------
-  const OFFICIAL_CLOSURE = [[1.335786, 103.862072], [1.335786, 103.867464], [1.324301, 103.867464], [1.324301, 103.862072]];
   const EXAMPLE = { name: 'Example: Bishan Rd to Kallang PCN, out & back', taps: [[1.35707, 103.85017], [1.34349, 103.85733]] };
-  const ACT = { walk: { label: 'Walking', pace: 720 }, run: { label: 'Running', pace: 360 }, cycle: { label: 'Cycling', pace: 200 } };
+  const ACT = { walk: { label: 'Walking', pace: 720 }, run: { label: 'Running', pace: 360 } };
   const MI = 1609.344;
   const LS = 'jalan.v1.';
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* storage unavailable: convenience only */ } };
   const saved = lsGet('settings', {});
-  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360, cycle: 200 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true }, saved);
-  S.paces = Object.assign({ walk: 720, run: 360, cycle: 200 }, saved.paces || {});
+  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true }, saved);
+  S.paces = Object.assign({ walk: 720, run: 360 }, saved.paces || {});
+  if (!ACT[S.activity]) S.activity = 'run';
   let tool = 'pan', net = null, router = null, editor = null, tilesBlocked = false;
   const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures });
 
@@ -34,21 +33,15 @@
   function parsePace(str) { const m = /^\s*(\d{1,2})(?::(\d{1,2}))?\s*$/.exec(str || ''); if (!m) return null; const v = +m[1] * 60 + +(m[2] || 0); return v >= 60 && v <= 1800 ? v : null; }
   const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  // ---------------- storage (cloud when the artifact offers it, else this browser) ----------------
+  // ---------------- storage (this browser; sync across devices comes later) ----------------
   const store = {
-    cloud: null, routes: [], loading: false,
-    list() { return this.cloud ? this.routes : lsGet('routes', []); },
-    async save(r) {
-      if (this.cloud) {
-        try { await this.cloud.doc(r.id).set(r); return 'cloud'; }
-        catch (e) { if (e && e.code === 'quota_exceeded') throw new Error('Storage is full. Delete a saved route and try again.'); }
-      }
-      const list = lsGet('routes', []).filter(x => x.id !== r.id); list.push(r); lsSet('routes', list); renderSaved(); return 'local';
+    list() { return lsGet('routes', []); },
+    save(r) {
+      const list = lsGet('routes', []).filter(x => x.id !== r.id); list.push(r);
+      try { localStorage.setItem(LS + 'routes', JSON.stringify(list)); } catch (e) { throw new Error('This browser is not letting the page save. Check private browsing or storage settings.'); }
+      renderSaved();
     },
-    async remove(r) {
-      if (this.cloud && r._cloud) { await this.cloud.doc(r.id).delete(); return; }
-      lsSet('routes', lsGet('routes', []).filter(x => x.id !== r.id)); renderSaved();
-    },
+    remove(r) { lsSet('routes', lsGet('routes', []).filter(x => x.id !== r.id)); renderSaved(); },
   };
 
   // ---------------- map & basemaps ----------------
@@ -266,6 +259,38 @@
     renderStats();
   }
 
+
+  // ---------------- closures (closures.json: dated, drawn on the map, warned about, optionally avoided) ----------------
+  let closures = [];
+  const closureLayer = L.layerGroup().addTo(map);
+  async function loadClosures() {
+    try { const r = await fetch(CFG.closuresUrl || 'closures.json'); if (r.ok) closures = await r.json(); } catch (e) { closures = []; }
+    const today = new Date().toISOString().slice(0, 10);
+    closures = (Array.isArray(closures) ? closures : []).filter(c => (!c.from || c.from <= today) && (!c.until || c.until >= today));
+    const danger = cssVar('--danger');
+    for (const c of closures) {
+      c.edges = net.setBlockedFromPolygons([c.polygon], c.kinds || [1, 2]);
+      for (const e of c.edges) {
+        net.blocked[e] = 1;
+        L.polyline(net.slice(e, 0, net.eLen[e]), { color: danger, weight: 5, opacity: .85, dashArray: '4 7', interactive: true })
+          .bindTooltip(`${c.title} (until ${c.untilLabel || c.until})`, { sticky: true }).addTo(closureLayer);
+      }
+    }
+  }
+  /** Names of closures the route really runs along: two consecutive samples (~20 m apart) on a closed
+   *  stretch, ignoring the 10 m at each end of it (a detour that turns off where a closure begins is fine). */
+  function closuresOnRoute() {
+    const cs = editor.coords; if (cs.length < 2 || !closures.length) return [];
+    const hit = new Set(); let prev = -1;
+    for (const p of RE.geo.resample(cs, 20)) {
+      const s = net.snap(p[0], p[1], 6, (e) => net.blocked[e] === 1);
+      const inside = s && s.t > 10 && s.t < net.eLen[s.edge] - 10 ? s.edge : -1;
+      if (inside >= 0 && prev >= 0) { const c = closures.find(x => x.edges.includes(inside)); if (c) hit.add(c.title); }
+      prev = inside;
+    }
+    return Array.from(hit);
+  }
+
   // ---------------- stats & elevation ----------------
   let elev = null, elevTimer = 0, elevSeq = 0, elevState = 'idle';
   const elevCache = new Map();
@@ -275,6 +300,8 @@
     const pace = S.paces[S.activity];
     $('#statTime').textContent = fmtTime(L0 / (S.units === 'mi' ? MI : 1000) * (S.units === 'mi' ? pace * MI / 1000 : pace));
     $('#statTimeLabel').textContent = `${ACT[S.activity].label} time`;
+    const onClosed = closuresOnRoute(); const cw = $('#closureWarn'); cw.hidden = !onClosed.length;
+    if (onClosed.length) cw.textContent = `This route goes through a closed stretch: ${onClosed.join(', ')}. Turn on “Route around closures” in Settings, or redraw that part.`;
     clearTimeout(elevTimer);
     if (editor.coords.length < 2) { elev = null; elevState = 'idle'; $('#statGain').textContent = '–'; drawChart(); return; }
     elevState = 'loading'; drawChart(); elevTimer = setTimeout(fetchElevation, 600);
@@ -298,8 +325,9 @@
         elevCache.set(key, vals);
       }
       if (seq !== elevSeq) return;
-      elev = { d: dists, h: vals, gl: RE.gainLoss(vals, 2) }; elevState = 'ok';
-      $('#statGain').innerHTML = `${Math.round(elev.gl.gain)}<small>m</small>`;
+      const smooth = RE.smoothElevation(dists, vals);
+      elev = { d: dists, h: smooth, gl: RE.gainLoss(smooth, 3) }; elevState = 'ok';
+      $('#statGain').innerHTML = `≈${Math.round(elev.gl.gain)}<small>m</small>`;
     } catch (err) {
       if (seq !== elevSeq) return;
       elev = null; elevState = 'unavailable'; $('#statGain').textContent = '–';
@@ -312,8 +340,12 @@
     box.querySelectorAll('svg, .tip').forEach(n => n.remove());
     if (elevState !== 'ok' || !elev) {
       msg.hidden = false;
+      if (!editor || editor.coords.length < 2) {
+        msg.innerHTML = 'Tap the map to start a route, or press Draw and trace it. <button type="button" class="linkbtn" id="exampleBtn">Try an example</button>';
+        msg.querySelector('#exampleBtn').addEventListener('click', loadExample); return;
+      }
       msg.textContent = editor && editor.coords.length >= 2
-        ? (elevState === 'loading' ? 'Loading elevation…' : IN_CLAUDE ? 'Elevation is not available in this preview. It works when the site is hosted on the web.' : 'Elevation is not available right now (it needs an internet connection to Open-Meteo).')
+        ? (elevState === 'loading' ? 'Loading elevation…' : 'Elevation is not available right now (it needs an internet connection to Open-Meteo).')
         : 'Tap the map to start a route, or press Draw and trace it.';
       return;
     }
@@ -361,7 +393,7 @@
     }
     nameIndex = Array.from(byName.values());
   }
-  let searchOnline = !IN_CLAUDE, searchTimer = 0, searchSeq = 0, results = [];
+  let searchOnline = true, searchTimer = 0, searchSeq = 0, results = [];
   function localSearch(q) {
     const toks = q.toLowerCase().split(/\s+/).filter(Boolean); if (!toks.length) return [];
     return nameIndex.filter(r => toks.every(t => r.low.includes(t)))
@@ -460,17 +492,17 @@
   function renderSaved() {
     const box = $('#savedList'); box.textContent = '';
     const list = store.list().slice().sort((a, b) => (b.updated || 0) - (a.updated || 0));
-    if (!list.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = store.loading ? 'Loading saved routes…' : 'No saved routes yet.'; box.appendChild(p); }
+    if (!list.length) { const p = document.createElement('p'); p.className = 'small'; p.textContent = 'No saved routes yet.'; box.appendChild(p); }
     for (const r of list) {
       const it = document.createElement('div'); it.className = 'item';
       it.innerHTML = `<button type="button" class="open"><span class="t"></span><span class="d"></span></button><span class="acts"><button type="button" data-a="del">Delete</button></span>`;
       it.querySelector('.t').textContent = r.name;
       it.querySelector('.d').textContent = `${fmtDist(r.distance || 0)} ${unitLabel()} · ${new Date(r.updated || r.created || Date.now()).toLocaleDateString()}`;
       it.querySelector('.open').addEventListener('click', () => { loadRoute(RE.decode(r.poly), r.wps || []); closeDrawer(); toast(`Opened ${r.name}`); });
-      it.querySelector('[data-a="del"]').addEventListener('click', async () => { try { await store.remove(r); toast('Deleted'); } catch (e) { toast('Could not delete. Try again.'); } });
+      it.querySelector('[data-a="del"]').addEventListener('click', () => { store.remove(r); toast('Deleted'); });
       box.appendChild(it);
     }
-    $('#storeNote').textContent = store.cloud ? 'Saved to your Claude account, so they appear on your other devices.' : 'Saved in this browser.';
+    $('#storeNote').textContent = 'Saved in this browser only. Export a GPX to keep a copy.';
   }
   function loadRoute(coords, wps) {
     editor.load(coords, wps.map(w => ({ lat: w.lat, lon: w.lon, title: w.title || 'Waypoint', notes: w.notes || '' })));
@@ -489,7 +521,7 @@
   $('#saveForm').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const name = $('#saveName').value.trim() || 'My route'; $('#saveDialog').close();
     const now = Date.now(), r = { id: 'r' + now.toString(36), kind: 'route', name, poly: RE.encode(editor.coords), wps: editor.wps.map(({ lat, lon, title, notes }) => ({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), title, notes })), distance: Math.round(editor.distance), activity: S.activity, created: now, updated: now };
-    try { const where = await store.save(r); toast(where === 'cloud' ? `Saved “${name}” to your account` : `Saved “${name}” in this browser`); renderSaved(); }
+    try { store.save(r); toast(`Saved “${name}” in this browser`); }
     catch (e) { toast(e.message || 'Could not save'); }
   });
   function gpxText() {
@@ -502,16 +534,9 @@
     lines.push('    </trkseg>', '  </trk>', '</gpx>', '');
     return { name, text: lines.join('\n') };
   }
-  let downloads = null;
   $('#exportBtn').addEventListener('click', async () => {
     if (editor.coords.length < 2) { toast('Draw a route first'); return; }
     const { name, text } = gpxText(), file = name.replace(/[^\w.-]+/g, '_') || 'route';
-    if (IN_CLAUDE) {
-      if (!downloads) { try { await navigator.clipboard.writeText(text); toast('Saving files is not available here, so the GPX was copied instead.'); } catch (e) { toast('Exporting is not available in this view.'); } return; }
-      try { await downloads.save({ filename: file + '.zip', data: RC.zipOne(file + '.gpx', text) }); toast('Saved as a .zip: open it to get the .gpx file.', 4500); }
-      catch (e) { toast(e && e.code === 'declined' ? 'Not saved' : 'Saving files is not available here.'); }
-      return;
-    }
     const url = URL.createObjectURL(new Blob([text], { type: 'application/gpx+xml' }));
     const a = document.createElement('a'); a.href = url; a.download = file + '.gpx'; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000); toast('GPX downloaded');
@@ -539,13 +564,11 @@
   window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('#dropzone').hidden = true; });
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', async (e) => { e.preventDefault(); dragDepth = 0; $('#dropzone').hidden = true; const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) await importFile(f); });
-  $('#shareBtn').hidden = IN_CLAUDE;
   $('#shareBtn').addEventListener('click', async () => {
     if (editor.coords.length < 2) { toast('Draw a route first'); return; }
     const link = `${location.href.split('#')[0]}#route=${RE.toShare(editor.coords, editor.wps)}`;
     try { await navigator.clipboard.writeText(link); toast('Share link copied'); } catch (e) { history.replaceState(null, '', link); toast('Copy the link from the address bar'); }
   });
-  $('#exportNote').textContent = IN_CLAUDE ? 'Here, Export saves a .zip with the .gpx inside (or copies the GPX text).' : '';
 
   // settings
   function syncSettings() {
@@ -561,7 +584,7 @@
   });
   $('#showPcn').addEventListener('change', (e) => { S.showPcn = e.target.checked; saveSettings(); setBasemap(activeBase === offlineBase ? 'offline' : S.basemap, true); });
   $('#preferPcn').addEventListener('change', (e) => { S.preferPcn = e.target.checked; router.pcnFactor = S.preferPcn ? 0.8 : 1; saveSettings(); });
-  $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; router.avoidClosures = S.avoidClosures; saveSettings(); });
+  $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; router.avoidClosures = S.avoidClosures; saveSettings(); renderStats(); });
 
   // ---------------- map controls ----------------
   $('#zoomIn').addEventListener('click', () => map.zoomIn());
@@ -623,35 +646,23 @@
   new MutationObserver(repaint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('resize', () => { if (elevState === 'ok') drawChart(); });
 
-  // ---------------- optional claude.ai page capabilities ----------------
-  async function initCapabilities() {
-    if (!IN_CLAUDE) return;
-    try { downloads = await window.claude.use('downloads'); } catch (e) { downloads = null; }
-    let db = null, user = null;
-    try { [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]); } catch (e) { return; }
-    if (!db || !user) return;
-    let id = null; try { id = await user.id(); } catch (e) { id = null; } if (!id) return;
-    store.cloud = db.collection('data/users/' + id); store.loading = true; renderSaved();
-    const timer = setTimeout(() => { if (store.loading) { store.loading = false; renderSaved(); } }, 10000);
-    store.cloud.onSnapshot((snap) => {
-      store.routes = snap.docs.map(d => Object.assign({}, d.data(), { id: d.id, _cloud: true })).filter(r => r.kind === 'route');
-      if (!snap.metadata.fromCache) { store.loading = false; clearTimeout(timer); }
-      renderSaved();
-    }, () => { clearTimeout(timer); store.cloud = null; store.loading = false; renderSaved(); });
+  function loadExample() {
+    if (editor.coords.length) editor.clear();
+    editor.addPoint(...EXAMPLE.taps[0], 100); for (const t of EXAMPLE.taps.slice(1)) editor.addPoint(...t, 100);
+    editor.outAndBack(); fitRoute(); toast('Example loaded: Bishan Road bridge to Braddell Road and back. Undo removes it.', 4500);
   }
 
   // ---------------- boot ----------------
   async function boot() {
     syncSettings();
-    setBasemap(IN_CLAUDE ? 'offline' : (S.basemap in tileLayers || S.basemap === 'offline' ? S.basemap : 'street'), true);
-    if (IN_CLAUDE) { tilesBlocked = true; renderLayersPop(); }
+    setBasemap(S.basemap in tileLayers || S.basemap === 'offline' ? S.basemap : 'street', true);
     try {
       const r = await fetch(CFG.networkUrl); if (!r.ok) throw new Error(r.status);
       net = RC.Network.fromText(await r.text());
     } catch (e) { $('#loading').textContent = 'The map data did not load. Check your connection and reload the page.'; return; }
     PX = new Float64Array(net.lat.length); PY = new Float64Array(net.lat.length);
     for (let i = 0; i < net.lat.length; i++) { PX[i] = (net.lon[i] + 180) / 360 * TILE; PY[i] = merc(net.lat[i]); }
-    for (const e of net.setBlockedFromPolygons([OFFICIAL_CLOSURE], [1, 2])) net.blocked[e] = 1;
+    await loadClosures();
     router = new RE.Router(net); router.pcnFactor = S.preferPcn ? 0.8 : 1; router.avoidClosures = S.avoidClosures;
     editor = new RE.RouteEditor(router);
     let draftT = 0;
@@ -664,16 +675,11 @@
     if (m) { try { const s = RE.fromShare(m[1]); loadRoute(s.coords, s.wps); opened = true; toast('Opened a shared route'); } catch (e) { toast('That share link is damaged'); } }
     const draft = lsGet('draft', null);
     if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { loadRoute(cs, draft.wps || []); opened = true; } }
-    if (!opened) {
-      editor.addPoint(...EXAMPLE.taps[0], 100); for (const t of EXAMPLE.taps.slice(1)) editor.addPoint(...t, 100);
-      editor.outAndBack(); editor.past = []; editor.future = []; renderRoute(); fitRoute();
-      toast('Example route loaded. Press the bin to clear it and start your own.', 5000);
-    }
+    if (!opened) renderRoute();
     $('#loading').hidden = true;
     if (tilesBlocked) showBanner('Offline map of roads and park connectors.');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { offlineBase.redraw(); pcnOverlay.redraw(); });
-    initCapabilities();
   }
-  window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // for automated tests
+  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // automated tests only
   boot();
 })();
