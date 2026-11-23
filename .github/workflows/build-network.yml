@@ -46,12 +46,17 @@ jobs:
           done
           [ -n "$SRC" ] || { echo "::error::No OSM mirror reachable"; exit 1; }
           echo "OSM_SOURCE=$SRC" >> "$GITHUB_ENV"
-          # Singapore's national boundary from OSM (relation 536780); fall back to a bounding box
-          if osmium getid -r src.osm.pbf r536780 -o sg-boundary.osm.pbf --overwrite \
-             && osmium extract -p sg-boundary.osm.pbf src.osm.pbf -o sg.osm.pbf --overwrite; then
-            echo "CLIP=boundary relation 536780" >> "$GITHUB_ENV"
+          # Singapore's national boundary from OSM, found by its country code; fall back to a bounding box
+          osmium tags-filter src.osm.pbf r/ISO3166-1:alpha2=SG -o sg-boundary.osm.pbf --overwrite || true
+          echo "::notice::boundary relations found: $(osmium fileinfo -e sg-boundary.osm.pbf 2>/dev/null | grep -E 'Number of relations' | xargs)"
+          WAYS=0
+          if osmium extract -p sg-boundary.osm.pbf src.osm.pbf -o sg.osm.pbf --overwrite; then
+            WAYS=$(osmium fileinfo -e -g data.count.ways sg.osm.pbf)
+          fi
+          if [ "${WAYS:-0}" -gt 50000 ]; then
+            echo "CLIP=Singapore boundary (ISO3166-1:alpha2=SG)" >> "$GITHUB_ENV"
           else
-            echo "::warning::Boundary clip failed; using a bounding box"
+            echo "::warning::Boundary clip gave ${WAYS:-0} ways; using a bounding box"
             osmium extract -b 103.59,1.15,104.10,1.48 src.osm.pbf -o sg.osm.pbf --overwrite
             echo "CLIP=bounding box" >> "$GITHUB_ENV"
           fi
