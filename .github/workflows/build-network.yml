@@ -77,9 +77,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           cp data/net-v2.json data/stats.json /tmp/
+          mkdir -p /tmp/src && cp sg.osm.pbf pcn.geojson land.geojson /tmp/src/
           git checkout --orphan "$TARGET"
           git rm -rfq --cached . && rm -rf ./* .github .gitignore .nojekyll 2>/dev/null || true
           mkdir -p data && cp /tmp/net-v2.json /tmp/stats.json data/
           git add data/net-v2.json data/stats.json
+          if [ "$TARGET" != data/network-v2 ]; then   # previews also keep the inputs, to rerun the builder locally
+            mkdir -p src && cp /tmp/src/* src/ && git add src
+          fi
           git commit -qm "Network build $(date -u +%F) from ${GITHUB_REF_NAME}"
           git push -f origin "$TARGET"

@@ -1,4 +1,6 @@
 # Usage: serve the site on port 8766 (python3 -m http.server 8766 from the site folder), then: python3 tests/smoke.py
+# With NET_FILE=/path/net-v2.json the footpath network is served from that file; without it the
+# footpath network is unreachable and the app must fall back to the bundled net.json.
 """Headless browser test of the Jalan Route Planner (served locally).
 Run A: tiles unreachable -> offline fallback; full editing workflow; save/export/import/share.
 Run B: tile servers stubbed with a local PNG -> online basemap stays, no fallback."""
@@ -8,6 +10,14 @@ from playwright.async_api import async_playwright
 URL = 'http://localhost:8766/index.html'
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
 results = {}
+NET_FILE = os.environ.get('NET_FILE')
+
+async def serve_network(pg):
+    """The footpath network normally comes from raw.githubusercontent.com: serve NET_FILE, or make it unreachable."""
+    async def handle(route):
+        if NET_FILE: await route.fulfill(status=200, path=NET_FILE, headers={'content-type': 'text/plain', 'access-control-allow-origin': '*'})
+        else: await route.abort()
+    await pg.route(re.compile(r'raw\.githubusercontent\.com/.+/net-v2\.json'), handle)
 
 async def pts_for(pg, a, b, noise=0):
     """Screen points along a routed path between two lat/lons (to drive the Draw tool like a finger)."""
@@ -33,8 +43,15 @@ async def run_a(p):
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(f'pageerror: {e}'))
     pg.on('console', lambda m: errs.append(f'console.{m.type}: {m.text}') if m.type == 'error' and 'Failed to load resource' not in m.text else None)
+    await serve_network(pg)
     await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
     r = results['A'] = {}
+    r['footpath_network'] = await pg.evaluate("window.__jalan.router.net.hasPaths")
+    r['paths_select_enabled'] = not await pg.locator('#paths').is_disabled()
+    if r['footpath_network']:
+        await pg.select_option('#paths', 'all'); r['profile_after_all'] = await pg.evaluate("window.__jalan.router.profile")
+        await pg.select_option('#paths', 'roads')
+    r['profile'] = await pg.evaluate("window.__jalan.router.profile")
     r['empty_on_first_visit'] = await dist(pg) == 0
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(400)
     r['example_km'] = round(await dist(pg) / 1000, 3)
@@ -117,6 +134,7 @@ async def run_b(p):
         await route.fulfill(status=200, body=json.dumps({'elevation': [8 + (14 if i % 25 < 4 else 0) for i in range(n)]}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
     await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com'), tile)
     await pg.route(re.compile(r'api\.open-meteo\.com'), elev)
+    await serve_network(pg)
     await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000)
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(3000)
     r = results['B'] = {}
@@ -128,6 +146,10 @@ async def run_b(p):
     await b.close()
 
 CHECKS = [
+    ('A', 'footpath_network', lambda v: v is bool(NET_FILE)),
+    ('A', 'paths_select_enabled', lambda v: v is bool(NET_FILE)),
+    ('A', 'profile', lambda v: v == 'roads'),
+    ('A', 'profile_after_all', lambda v: v == ('all' if NET_FILE else None)),
     ('A', 'empty_on_first_visit', lambda v: v is True),
     ('A', 'example_km', lambda v: 3.0 < v < 4.0),
     ('A', 'two_taps_km', lambda v: 0.6 < v < 1.1),
