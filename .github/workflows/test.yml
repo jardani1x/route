@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Route engine tests
+        run: node tests/test_engine.js
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright==1.48.0
+          python -m playwright install --with-deps chromium
+
+      - name: Start a static server
+        run: |
+          python -m http.server 8766 > /dev/null 2>&1 &
+          sleep 1
+
+      - name: Browser tests (planner workflow, offline fallback, stubbed online services)
+        run: python tests/smoke.py
+
+      - name: Browser tests (moving the map while drawing, desktop + touch)
+        run: python tests/pan_while_drawing.py

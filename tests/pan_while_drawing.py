@@ -44,7 +44,9 @@ async def desktop(p):
     r['space_drag_shift_px'] = moved_px(s1, s2, s1['zoom']); r['space_drag_route_changed'] = abs(s2['dist'] - s1['dist']) > 0.01
     r['space_kept_draw_tool'] = s2['tool'] == 'draw'
     # plain left drag still draws: clear, then trace along a known path on screen
-    await pg.click('#clearBtn'); await pg.click('#toolDraw') if (await state(pg))['tool'] != 'draw' else None; s2 = await state(pg)
+    if await pg.is_enabled('#clearBtn'): await pg.click('#clearBtn')
+    if (await state(pg))['tool'] != 'draw': await pg.click('#toolDraw')
+    s2 = await state(pg)
     pts = await pg.evaluate("""() => { const J = window.__jalan, p = J.router.path([1.35142, 103.855], [1.3470, 103.8562]);
        return window.RouteEngine.geo.resample(p, 12).map(c => { const q = J.map.latLngToContainerPoint(c); return [q.x, q.y]; }); }""")
     await pg.mouse.move(*pts[0]); await pg.mouse.down()
@@ -98,4 +100,24 @@ async def main():
     async with async_playwright() as p:
         await desktop(p); await touch(p)
     print(json.dumps(R, indent=1))
+    d, t = R['desktop'], R['touch']
+    near = lambda v, want, tol: abs(v[0] - want[0]) <= tol and abs(v[1] - want[1]) <= tol
+    checks = [
+        ('right-drag moves the map', near(d['right_drag_shift_px'], (200, -100), 15)),
+        ('right-drag leaves the route alone', not d['right_drag_route_changed']),
+        ('no context menu while drawing', d['context_menu_blocked'] is True),
+        ('Space-drag moves the map', abs(d['space_drag_shift_px'][0]) > 100),
+        ('Space-drag leaves the route alone', not d['space_drag_route_changed']),
+        ('Space keeps the Draw tool', d['space_kept_draw_tool']),
+        ('left-drag still draws', d['left_drag_added_m'] > 300),
+        ('one finger draws', t['one_finger_draw_added_m'] > 200),
+        ('two fingers move the map', near(t['two_finger_shift_px'], (-100, 60), 15)),
+        ('two fingers leave the route alone', not t['two_finger_route_changed']),
+        ('pinch zooms in', t['pinch_zoom'][1] > t['pinch_zoom'][0]),
+        ('stroke kept when a second finger lands', t['stroke_kept_when_second_finger_lands_m'] > 200),
+        ('no page errors', not d['errors'] and not t['errors']),
+    ]
+    bad = [n for n, ok in checks if not ok]
+    print('FAILED: ' + '; '.join(bad) if bad else 'ALL GESTURE CHECKS PASSED')
+    raise SystemExit(1 if bad else 0)
 asyncio.run(main())

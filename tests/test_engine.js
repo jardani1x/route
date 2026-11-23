@@ -80,6 +80,20 @@ const enc = E.decode(E.encode(outbound)); ok(maxDev(enc, outbound) < 1.5, `polyl
 const sh = E.fromShare(E.toShare(outbound, [{ lat: 1.35, lon: 103.85, title: 'Café ☕' }]));
 ok(sh.wps[0].title === 'Café ☕' && Math.abs(length(sh.coords) - length(outbound)) < 20, 'share link round trip (unicode title)');
 const gl = E.gainLoss([10, 10.5, 11, 13, 12.9, 12, 9, 9.4, 15]); ok(Math.abs(gl.gain - 9) < 1e-9 && Math.abs(gl.loss - 4) < 1e-9, `gain/loss with 2 m hysteresis: +${gl.gain} / -${gl.loss}`);
+{ // elevation smoothing: a flat 3.5 km riverside route with roof/tree spikes from the 90 m surface model
+  let s2 = 11; const r2 = () => { s2 = (s2 * 16807) % 2147483647; return s2 / 2147483647; };
+  const d = [], flat = []; for (let i = 0; i < 200; i++) { d.push(i * 17.8); flat.push(6 + (r2() - 0.5) * 1.5); }
+  const spiky = flat.slice(); for (let k = 0; k < 14; k++) { const at = Math.floor(r2() * 195), hgt = 6 + r2() * 12; for (let j = 0; j < 5 && at + j < 200; j++) spiky[at + j] += hgt; }
+  const raw = E.gainLoss(spiky, 2).gain, sm = E.gainLoss(E.smoothElevation(d, spiky), 3).gain;
+  ok(raw > 60 && sm < 8, `flat route with surface spikes: climb ${raw.toFixed(0)} m raw -> ${sm.toFixed(0)} m smoothed`);
+  // a real 40 m hill over 700 m (like Mount Faber's road) must survive smoothing
+  const hill = d.map((x, i) => 5 + (x > 1000 && x < 1700 ? (x - 1000) / 700 * 40 : x >= 1700 && x < 2400 ? 40 - (x - 1700) / 700 * 40 : 0) + (r2() - 0.5));
+  const hs = E.gainLoss(E.smoothElevation(d, hill), 3).gain;
+  ok(hs > 32 && hs < 46, `real 40 m hill keeps its climb after smoothing: ${hs.toFixed(1)} m`);
+  const ramp = d.map((x) => 5 + (x > 800 && x < 1300 ? (x - 800) / 500 * 25 : x >= 1300 ? 25 : 0) + (r2() - 0.5));
+  const rs = E.gainLoss(E.smoothElevation(d, ramp), 3).gain;
+  ok(rs > 21 && rs < 28, `25 m ramp keeps its climb after smoothing: ${rs.toFixed(1)} m`);
+}
 const es = E.elevationSamples(outbound, 200); const nExp = Math.min(200, Math.floor(length(outbound) / 25) + 1); ok(es.pts.length === nExp && Math.abs(es.dists[nExp - 1] - length(outbound)) < 1e-6, `elevation sampling: ${es.pts.length} evenly spaced points`);
 
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED'); process.exit(fails ? 1 : 0);
