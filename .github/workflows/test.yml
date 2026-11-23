@@ -19,6 +19,18 @@ jobs:
       - name: Route engine tests
         run: node tests/test_engine.js
 
+      - name: Fetch the footpath network (preview build for pull requests, main build otherwise)
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then order="data/network-v2-preview data/network-v2"; else order="data/network-v2 data/network-v2-preview"; fi
+          for b in $order; do
+            if git fetch -q --depth=1 origin "$b" 2>/dev/null; then
+              git show FETCH_HEAD:data/net-v2.json > /tmp/net-v2.json && echo "::notice::footpath network from $b ($(du -h /tmp/net-v2.json | cut -f1))" && break
+            fi
+          done
+
+      - name: Footpath network tests (real routes, both profiles)
+        run: node tests/test_network_v2.js /tmp/net-v2.json
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -33,8 +45,12 @@ jobs:
           python -m http.server 8766 > /dev/null 2>&1 &
           sleep 1
 
-      - name: Browser tests (planner workflow, offline fallback, stubbed online services)
+      - name: Browser tests (planner workflow, offline fallback, stubbed online services) on net.json
         run: python tests/smoke.py
+
+      - name: Browser tests on the footpath network
+        run: |
+          if [ -f /tmp/net-v2.json ]; then NET_FILE=/tmp/net-v2.json python tests/smoke.py; else echo "::warning::no footpath network build to test"; fi
 
       - name: Browser tests (moving the map while drawing, desktop + touch)
         run: python tests/pan_while_drawing.py

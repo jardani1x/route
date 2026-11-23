@@ -8,23 +8,23 @@
   const $ = (s) => document.querySelector(s);
 
   // ---------------- constants & state ----------------
-  const EXAMPLE = { name: 'Example: Bishan Rd to Kallang PCN, out & back', taps: [[1.35707, 103.85017], [1.34349, 103.85733]] };
+  const EXAMPLE = { name: 'Example: Bishan Rd to Kallang PCN, out & back', taps: [[1.35707, 103.85017], [1.34349, 103.85738]] };
   const ACT = { walk: { label: 'Walking', pace: 720 }, run: { label: 'Running', pace: 360 } };
   const MI = 1609.344;
   const LS = 'jalan.v1.';
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* storage unavailable: convenience only */ } };
   const saved = lsGet('settings', {});
-  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true }, saved);
+  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true, paths: 'roads' }, saved);
   S.paces = Object.assign({ walk: 720, run: 360 }, saved.paces || {});
   if (!ACT[S.activity]) S.activity = 'run';
   let tool = 'pan', net = null, router = null, editor = null, tilesBlocked = false;
-  const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures });
+  const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures, paths: S.paths });
 
   // ---------------- small UI helpers ----------------
   let toastT = 0;
   function toast(msg, ms = 3200) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
-  const report = (r) => { if (r && !r.ok && r.msg) toast(r.msg); return r; };
+  const report = (r) => { if (r && (!r.ok || r.note) && (r.msg || r.note)) toast(r.msg || r.note); return r; };
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const fmtDist = (m, dp = 2) => (S.units === 'mi' ? (m / MI).toFixed(dp) : (m / 1000).toFixed(dp));
   const unitLabel = () => (S.units === 'mi' ? 'mi' : 'km');
@@ -52,7 +52,7 @@
   let PX = null, PY = null;
   const merc = (la) => { const s = Math.sin(la * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE; };
   const unmercY = (y) => { const n = Math.PI - 2 * Math.PI * y / TILE; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); };
-  function themeColors() { return { road: cssVar('--road'), casing: cssVar('--road-casing'), fill: cssVar('--road-fill'), pcn: cssVar('--pcn'), label: cssVar('--label'), halo: cssVar('--halo'), font: cssVar('--font-body') }; }
+  function themeColors() { return { road: cssVar('--road'), casing: cssVar('--road-casing'), fill: cssVar('--road-fill'), pcn: cssVar('--pcn'), path: cssVar('--path'), label: cssVar('--label'), halo: cssVar('--halo'), font: cssVar('--font-body') }; }
   function strokeEdges(ctx, ids, sc, ox, oy, test) {
     ctx.beginPath();
     for (const e of ids) {
@@ -67,7 +67,8 @@
     const seen = new Set(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const e of ids) {
       const kind = net.eKind[e], name = net.nameOf(e);
-      if (!name || kind === 2 || (kind === 0 && (!roads || z < 16)) || (kind === 1 && z < 15) || seen.has(name)) continue;
+      const street = kind === 0 || kind === 6;
+      if (!name || seen.has(name) || (kind === 1 ? z < 15 : street ? (!roads || z < 16) : (!roads || z < 17 || kind !== 3))) continue;
       let best = null;
       for (let i = net.eStart[e]; i < net.eStart[e + 1] - 1; i++) {
         const x1 = PX[i] * sc - ox, y1 = PY[i] * sc - oy, x2 = PX[i + 1] * sc - ox, y2 = PY[i + 1] * sc - oy, L2 = Math.hypot(x2 - x1, y2 - y1);
@@ -91,9 +92,19 @@
       const z = c.z, sc = Math.pow(2, z), ox = c.x * TILE, oy = c.y * TILE, pad = 24, roads = this.options.roads;
       const n = unmercY((oy - pad) / sc), s = unmercY((oy + TILE + pad) / sc), w = (ox - pad) / sc / TILE * 360 - 180, e = (ox + TILE + pad) / sc / TILE * 360 - 180;
       const ids = net.edgesIn(s, w, n, e), th = themeColors();
-      const isRoad = (id) => net.eKind[id] === 0, isPcn = (id) => net.eKind[id] === 1;
+      const isRoad = (id) => net.eKind[id] === 0, isService = (id) => net.eKind[id] === 6, isPcn = (id) => net.eKind[id] === 1;
+      const isPath = (id) => { const k = net.eKind[id]; return k === 2 || k === 3 || k === 4 || k === 5; };
+      if (roads && z >= 15 && net.hasPaths) {  // footpaths, pavements, crossings and steps under the roads
+        ctx.strokeStyle = th.path; ctx.lineWidth = z >= 17 ? 1.6 : 1; ctx.setLineDash(z >= 16 ? [3, 3] : []);
+        strokeEdges(ctx, ids, sc, ox, oy, isPath); ctx.setLineDash([]);
+      }
       if (roads) {
-        if (z >= 15) { const rw = z >= 18 ? 9 : z >= 17 ? 7 : z >= 16 ? 5 : 3.2; ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, ox, oy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, ox, oy, isRoad); }
+        if (z >= 15) {
+          const rw = z >= 18 ? 9 : z >= 17 ? 7 : z >= 16 ? 5 : 3.2, sw = rw * 0.55;  // service roads drawn narrower
+          ctx.strokeStyle = th.casing; ctx.lineWidth = sw + 1.4; strokeEdges(ctx, ids, sc, ox, oy, isService);
+          ctx.strokeStyle = th.fill; ctx.lineWidth = sw; strokeEdges(ctx, ids, sc, ox, oy, isService);
+          ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, ox, oy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, ox, oy, isRoad);
+        }
         else { ctx.strokeStyle = th.road; ctx.lineWidth = z >= 14 ? 1.6 : z >= 13 ? 1.1 : 0.7; strokeEdges(ctx, ids, sc, ox, oy, isRoad); }
       }
       if (this.options.pcn) {
@@ -118,7 +129,7 @@
     if (tilesBlocked || tl !== activeBase) return;
     if (tl._stats.error >= 4 && tl._stats.load === 0) {
       tilesBlocked = true; setBasemap('offline', true);
-      showBanner('Online map tiles cannot load here, so this is the built-in offline map of roads and park connectors.');
+      showBanner('Online map tiles cannot load here, so this is the built-in offline map of streets, paths and park connectors.');
     }
   }
   function setBasemap(id, auto) {
@@ -149,7 +160,7 @@
     const el = map.getContainer(); el.classList.remove('tool-draw', 'tool-erase', 'tool-waypoint'); if (tool !== 'pan') el.classList.add('tool-' + tool);
     const drawing = tool === 'draw' || tool === 'erase';
     if (drawing && !spacePan) { map.dragging.disable(); el.style.touchAction = 'none'; } else { map.dragging.enable(); el.style.touchAction = drawing ? 'none' : ''; }
-    showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of roads and park connectors.' : ''));
+    showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of streets, paths and park connectors.' : ''));
     if (editor) renderRoute();
   }
   function setSnap(v) { editor.snap = v; $('#toolSnap').setAttribute('aria-pressed', String(v)); toast(v ? 'Snap to roads and paths: on' : 'Snap off: lines go exactly where you draw', 1800); }
@@ -269,7 +280,9 @@
     closures = (Array.isArray(closures) ? closures : []).filter(c => (!c.from || c.from <= today) && (!c.until || c.until >= today));
     const danger = cssVar('--danger');
     for (const c of closures) {
-      c.edges = net.setBlockedFromPolygons([c.polygon], c.kinds || [1, 2]);
+      // kinds by name ("park connector", "path", "steps"...) so the file works with either network format
+      const kinds = (c.kinds || ['park connector']).map(k => typeof k === 'number' ? k : RC.KIND_LABEL.findIndex(l => l.toLowerCase() === String(k).toLowerCase()));
+      c.edges = net.setBlockedFromPolygons([c.polygon], kinds);
       for (const e of c.edges) {
         net.blocked[e] = 1;
         L.polyline(net.slice(e, 0, net.eLen[e]), { color: danger, weight: 5, opacity: .85, dashArray: '4 7', interactive: true })
@@ -386,7 +399,7 @@
   function buildNameIndex() {
     const byName = new Map();
     for (let e = 0; e < net.E; e++) {
-      const n = net.nameOf(e); if (!n || net.eKind[e] === 2) continue;
+      const n = net.nameOf(e); if (!n || net.eKind[e] === 2 || net.eKind[e] === 5) continue;
       let r = byName.get(n); const b = e * 4;
       if (!r) byName.set(n, r = { name: n, kind: net.eKind[e], s: 90, w: 180, n: -90, e: -180, low: n.toLowerCase() });
       r.s = Math.min(r.s, net.bbox[b]); r.w = Math.min(r.w, net.bbox[b + 1]); r.n = Math.max(r.n, net.bbox[b + 2]); r.e = Math.max(r.e, net.bbox[b + 3]);
@@ -398,7 +411,7 @@
     const toks = q.toLowerCase().split(/\s+/).filter(Boolean); if (!toks.length) return [];
     return nameIndex.filter(r => toks.every(t => r.low.includes(t)))
       .sort((a, b) => (b.low.startsWith(toks[0]) - a.low.startsWith(toks[0])) || a.name.length - b.name.length).slice(0, 6)
-      .map(r => ({ title: r.name, detail: r.kind === 1 ? 'Park connector' : 'Street', bounds: [[r.s, r.w], [r.n, r.e]] }));
+      .map(r => ({ title: r.name, detail: r.kind === 1 ? 'Park connector' : r.kind === 0 || r.kind === 6 ? 'Street' : RC.KIND_LABEL[r.kind], bounds: [[r.s, r.w], [r.n, r.e]] }));
   }
   const titleCase = (s) => s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase());
   async function onlineSearch(q, seq) {
@@ -440,7 +453,7 @@
   function renderLayersPop() {
     const pop = $('#layersPop'); pop.textContent = '';
     const h = document.createElement('h4'); h.textContent = 'Map'; pop.appendChild(h);
-    const opts = Object.entries(CFG.basemaps).map(([id, b]) => [id, b.label]).concat([['offline', 'Offline (roads + park connectors)']]);
+    const opts = Object.entries(CFG.basemaps).map(([id, b]) => [id, b.label]).concat([['offline', 'Offline (streets, paths, park connectors)']]);
     for (const [id, label] of opts) {
       const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', 'menuitemradio');
       const on = (activeBase === offlineBase ? 'offline' : Object.keys(tileLayers).find(k => tileLayers[k] === activeBase)) === id;
@@ -572,6 +585,7 @@
 
   // settings
   function syncSettings() {
+    $('#paths').value = S.paths; $('#paths').disabled = !!net && !net.hasPaths;
     $('#units').value = S.units; $('#showPcn').checked = S.showPcn; $('#preferPcn').checked = S.preferPcn; $('#avoidClosures').checked = S.avoidClosures;
     $('#activity').value = S.activity; $('#paceAct').textContent = ACT[S.activity].label.toLowerCase(); $('#paceUnit').textContent = unitLabel();
     $('#pace').value = fmtPace(S.units === 'mi' ? S.paces[S.activity] * MI / 1000 : S.paces[S.activity]);
@@ -584,6 +598,10 @@
   });
   $('#showPcn').addEventListener('change', (e) => { S.showPcn = e.target.checked; saveSettings(); setBasemap(activeBase === offlineBase ? 'offline' : S.basemap, true); });
   $('#preferPcn').addEventListener('change', (e) => { S.preferPcn = e.target.checked; router.pcnFactor = S.preferPcn ? 0.8 : 1; saveSettings(); });
+  $('#paths').addEventListener('change', (e) => {
+    S.paths = e.target.value; saveSettings();
+    if (router) { router.setProfile(S.paths); toast(S.paths === 'all' ? 'New legs can use any footpath' : 'New legs keep out of housing estates'); }
+  });
   $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; router.avoidClosures = S.avoidClosures; saveSettings(); renderStats(); });
 
   // ---------------- map controls ----------------
@@ -656,14 +674,22 @@
   async function boot() {
     syncSettings();
     setBasemap(S.basemap in tileLayers || S.basemap === 'offline' ? S.basemap : 'street', true);
-    try {
-      const r = await fetch(CFG.networkUrl); if (!r.ok) throw new Error(r.status);
-      net = RC.Network.fromText(await r.text());
-    } catch (e) { $('#loading').textContent = 'The map data did not load. Check your connection and reload the page.'; return; }
+    for (const url of CFG.networkUrls || [CFG.networkUrl]) {
+      try {
+        const r = await fetch(url); if (!r.ok) throw new Error(r.status);
+        net = RC.Network.fromText(await r.text()); break;
+      } catch (e) { console.warn('network', url, e.message); }
+    }
+    if (!net) { $('#loading').textContent = 'The map data did not load. Check your connection and reload the page.'; return; }
+    if (!net.hasPaths) {
+      $('#networkNote').textContent = $('#networkNote').textContent.replace(/^Routing uses[^.]*\./, 'Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors; footpaths could not be loaded.');
+      $('#pathsNote').textContent = 'Footpaths could not be loaded, so routes keep to named streets and park connectors.';
+    }
+    syncSettings();
     PX = new Float64Array(net.lat.length); PY = new Float64Array(net.lat.length);
     for (let i = 0; i < net.lat.length; i++) { PX[i] = (net.lon[i] + 180) / 360 * TILE; PY[i] = merc(net.lat[i]); }
     await loadClosures();
-    router = new RE.Router(net); router.pcnFactor = S.preferPcn ? 0.8 : 1; router.avoidClosures = S.avoidClosures;
+    router = new RE.Router(net, S.paths); router.pcnFactor = S.preferPcn ? 0.8 : 1; router.avoidClosures = S.avoidClosures;
     editor = new RE.RouteEditor(router);
     let draftT = 0;
     editor.onChange(() => { renderRoute(); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', { poly: RE.encode(editor.coords), wps: editor.wps }), 400); });
@@ -677,7 +703,7 @@
     if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { loadRoute(cs, draft.wps || []); opened = true; } }
     if (!opened) renderRoute();
     $('#loading').hidden = true;
-    if (tilesBlocked) showBanner('Offline map of roads and park connectors.');
+    if (tilesBlocked) showBanner('Offline map of streets, paths and park connectors.');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { offlineBase.redraw(); pcnOverlay.redraw(); });
   }
   if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // automated tests only

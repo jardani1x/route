@@ -1,0 +1,89 @@
+name: Build network
+
+# Builds data/net-v2.json (walk network with footpaths) from OpenStreetMap + NParks park connectors
+# and publishes it, with build stats, to the data/network-v2 branch. Run by hand or monthly.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 2 * *'   # 03:17 UTC on the 2nd of each month
+  push:                    # and whenever the builder itself changes
+    paths:
+      - scripts/build_network.py
+      - scripts/check_network.py
+      - .github/workflows/build-network.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
+          pip install osmium==4.3.2 shapely==2.2.0 pyproj==3.8.0
+
+      - name: Builder unit test
+        run: python tests/test_build_network.py
+
+      - name: Download OpenStreetMap and cut out Singapore
+        run: |
+          # give up on a mirror that is slow (<50 kB/s for a minute) or takes over 10 minutes
+          fetch() { curl -sSfL --retry 2 --retry-delay 10 --connect-timeout 30 --max-time 600 --speed-limit 50000 --speed-time 60 -o src.osm.pbf "$1"; }
+          SRC=""
+          for url in \
+            https://download.openstreetmap.fr/extracts/asia/singapore-latest.osm.pbf \
+            https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf \
+            https://download.bbbike.org/osm/bbbike/Singapore/Singapore.osm.pbf; do
+            if fetch "$url"; then SRC="$url"; echo "::notice::OSM source: $url ($(du -h src.osm.pbf | cut -f1))"; break
+            else echo "::warning::OSM download failed (curl exit $?): $url"; fi
+          done
+          [ -n "$SRC" ] || { echo "::error::No OSM mirror reachable"; exit 1; }
+          echo "OSM_SOURCE=$SRC" >> "$GITHUB_ENV"
+          # A bounding box around Singapore; the builder then keeps only what is on Singapore's land (URA regions)
+          osmium extract -b 103.59,1.15,104.10,1.48 --strategy complete_ways src.osm.pbf -o sg.osm.pbf --overwrite
+          echo "::notice::$(osmium fileinfo -e sg.osm.pbf | grep -E 'Number of ways' | xargs)"
+
+      - name: Download NParks park connectors and URA land boundary (data.gov.sg)
+        run: |
+          get() {  # data.gov.sg dataset id -> file
+            url=$(curl -sSf --retry 3 --retry-delay 10 "https://api-open.data.gov.sg/v1/public/api/datasets/$1/poll-download" \
+                  | python -c "import sys, json; d = json.load(sys.stdin); assert d['code'] == 0, d; print(d['data']['url'])")
+            curl -sSfL --retry 3 -o "$2" "$url"
+            echo "::notice::$2: $(python -c "import json, sys; print(len(json.load(open(sys.argv[1]))['features']), 'features')" "$2")"
+          }
+          get d_a69ef89737379f231d2ae93fd1c5707f pcn.geojson      # NParks Park Connector Loop
+          sleep 5
+          get d_bf4d24df9129d5a8ff8cf82e20959ee0 land.geojson     # URA Master Plan 2019 Region Boundary (No Sea)
+
+      - name: Build
+        run: |
+          python scripts/build_network.py --osm sg.osm.pbf --pcn pcn.geojson --land land.geojson --out data/net-v2.json --stats data/stats.json
+          python scripts/check_network.py data/net-v2.json
+          python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = 'URA region boundaries (no sea) + 150 m'; s['osm_source'] = '$OSM_SOURCE'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
+          echo "::notice::$(python -c "import json; s = json.load(open('data/stats.json')); print({k: s.get(k) for k in ('edges', 'file_gzip_mb', 'outside_land_km_dropped', 'pcn_with_osm_way_within_12m_pct', 'pcn_marked_as_park_connector_pct', 'roads_mode_pcn_reachable_pct', 'components')})")"
+
+      - name: Publish (main -> data/network-v2, other branches -> data/network-v2-preview)
+        run: |
+          if [ "$GITHUB_REF_NAME" = "main" ]; then TARGET=data/network-v2; else TARGET=data/network-v2-preview; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp data/net-v2.json data/stats.json /tmp/
+          mkdir -p /tmp/src && cp sg.osm.pbf pcn.geojson land.geojson /tmp/src/
+          git checkout --orphan "$TARGET"
+          git rm -rfq --cached . && rm -rf ./* .github .gitignore .nojekyll 2>/dev/null || true
+          mkdir -p data && cp /tmp/net-v2.json /tmp/stats.json data/
+          git add data/net-v2.json data/stats.json
+          if [ "$TARGET" != data/network-v2 ]; then   # previews also keep the inputs, to rerun the builder locally
+            mkdir -p src && cp /tmp/src/* src/ && git add src
+          fi
+          git commit -qm "Network build $(date -u +%F) from ${GITHUB_REF_NAME}"
+          git push -f origin "$TARGET"

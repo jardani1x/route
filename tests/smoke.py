@@ -1,4 +1,6 @@
 # Usage: serve the site on port 8766 (python3 -m http.server 8766 from the site folder), then: python3 tests/smoke.py
+# With NET_FILE=/path/net-v2.json the footpath network is served from that file; without it the
+# footpath network is unreachable and the app must fall back to the bundled net.json.
 """Headless browser test of the Jalan Route Planner (served locally).
 Run A: tiles unreachable -> offline fallback; full editing workflow; save/export/import/share.
 Run B: tile servers stubbed with a local PNG -> online basemap stays, no fallback."""
@@ -8,6 +10,14 @@ from playwright.async_api import async_playwright
 URL = 'http://localhost:8766/index.html'
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
 results = {}
+NET_FILE = os.environ.get('NET_FILE')
+
+async def serve_network(pg):
+    """The footpath network normally comes from raw.githubusercontent.com: serve NET_FILE, or make it unreachable."""
+    async def handle(route):
+        if NET_FILE: await route.fulfill(status=200, path=NET_FILE, headers={'content-type': 'text/plain', 'access-control-allow-origin': '*'})
+        else: await route.abort()
+    await pg.route(re.compile(r'raw\.githubusercontent\.com/.+/net-v2\.json'), handle)
 
 async def pts_for(pg, a, b, noise=0):
     """Screen points along a routed path between two lat/lons (to drive the Draw tool like a finger)."""
@@ -33,8 +43,15 @@ async def run_a(p):
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(f'pageerror: {e}'))
     pg.on('console', lambda m: errs.append(f'console.{m.type}: {m.text}') if m.type == 'error' and 'Failed to load resource' not in m.text else None)
+    await serve_network(pg)
     await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
     r = results['A'] = {}
+    r['footpath_network'] = await pg.evaluate("window.__jalan.router.net.hasPaths")
+    r['paths_select_enabled'] = not await pg.locator('#paths').is_disabled()
+    if r['footpath_network']:
+        await pg.select_option('#paths', 'all'); r['profile_after_all'] = await pg.evaluate("window.__jalan.router.profile")
+        await pg.select_option('#paths', 'roads')
+    r['profile'] = await pg.evaluate("window.__jalan.router.profile")
     r['empty_on_first_visit'] = await dist(pg) == 0
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(400)
     r['example_km'] = round(await dist(pg) / 1000, 3)
@@ -58,8 +75,10 @@ async def run_a(p):
     await pg.evaluate("() => { const J = window.__jalan, cs = J.editor.coords, c = window.RouteEngine.geo.cumul(cs); J.map.setView(window.RouteEngine.geo.pointAt(cs, c, c[cs.length-1]*0.5), 17, {animate: false}); }"); await pg.wait_for_timeout(300)
     mid = await pg.evaluate("() => { const J = window.__jalan, cs = J.editor.coords, c = window.RouteEngine.geo.cumul(cs); const p = window.RouteEngine.geo.pointAt(cs, c, c[cs.length-1]*0.5); const q = J.map.latLngToContainerPoint(p); return [q.x, q.y]; }")
     b0 = await dist(pg); await drag(pg, [[mid[0] - 25, mid[1] - 25], [mid[0], mid[1]], [mid[0] + 25, mid[1] + 25]]); r['erase_middle_change_m'] = round(await dist(pg) - b0)
+    # the gap is joined another way; where there is none within 8x the erased length, the route keeps it and says so
+    r['erase_note'] = await pg.text_content('#toast') if await pg.is_visible('#toast') else ''
     await pg.click('#undoBtn'); r['undo_restores'] = abs(await dist(pg) - b0) < 0.01
-    await pg.click('#redoBtn'); r['redo_reapplies'] = abs(await dist(pg) - b0) > 1
+    await pg.click('#redoBtn'); r['redo_reapplies'] = abs(await dist(pg) - b0) > 1 if r['erase_middle_change_m'] else None
     await pg.click('#undoBtn')
     # keyboard: Escape back to pan, Shift toggles snap
     await pg.keyboard.press('Escape'); r['tool_after_escape'] = await pg.get_attribute('#toolErase', 'aria-pressed')
@@ -117,6 +136,7 @@ async def run_b(p):
         await route.fulfill(status=200, body=json.dumps({'elevation': [8 + (14 if i % 25 < 4 else 0) for i in range(n)]}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
     await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com'), tile)
     await pg.route(re.compile(r'api\.open-meteo\.com'), elev)
+    await serve_network(pg)
     await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000)
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(3000)
     r = results['B'] = {}
@@ -128,12 +148,17 @@ async def run_b(p):
     await b.close()
 
 CHECKS = [
+    ('A', 'footpath_network', lambda v: v is bool(NET_FILE)),
+    ('A', 'paths_select_enabled', lambda v: v is bool(NET_FILE)),
+    ('A', 'profile', lambda v: v == 'roads'),
+    ('A', 'profile_after_all', lambda v: v == ('all' if NET_FILE else None)),
     ('A', 'empty_on_first_visit', lambda v: v is True),
     ('A', 'example_km', lambda v: 3.0 < v < 4.0),
     ('A', 'two_taps_km', lambda v: 0.6 < v < 1.1),
     ('A', 'draw_added_m', lambda v: v > 700),
     ('A', 'undo_restores', lambda v: v is True),
-    ('A', 'redo_reapplies', lambda v: v is True),
+    ('A', 'redo_reapplies', lambda v: v is not False),
+    ('A', 'erase_note', lambda v: 'no other way' in v if results['A'].get('erase_middle_change_m') == 0 else True),
     ('A', 'out_back_ratio', lambda v: abs(v - 2) < 0.01),
     ('A', 'waypoints', lambda v: v == ['Water point']),
     ('A', 'saved_list', lambda v: 'Test loop' in v),
