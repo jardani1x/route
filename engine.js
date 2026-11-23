@@ -43,6 +43,22 @@
     }
     return best;
   }
+  /** Every stretch of the polyline within tol of p: one {d, dist} per run of nearby segments
+   *  (an out & back route passes the same spot twice, so a point can sit on both legs). */
+  function locateAll(cs, p, tol) {
+    if (cs.length < 2) return cs.length ? [{ d: 0, dist: D(cs[0], p) }].filter(x => x.dist <= tol) : [];
+    const kx = KX0 * Math.cos(p[0] * Math.PI / 180), out = []; let acc = 0, run = null;
+    for (let i = 0; i < cs.length - 1; i++) {
+      const ax = (cs[i][1] - p[1]) * kx, ay = (cs[i][0] - p[0]) * KY, bx = (cs[i + 1][1] - p[1]) * kx, by = (cs[i + 1][0] - p[0]) * KY;
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy; let u = L2 > 0 ? -(ax * dx + ay * dy) / L2 : 0; u = Math.max(0, Math.min(1, u));
+      const dist = Math.hypot(ax + u * dx, ay + u * dy), segL = D(cs[i], cs[i + 1]);
+      if (dist <= tol) { if (!run || dist < run.dist) run = { d: acc + u * segL, dist }; }
+      else if (run) { out.push(run); run = null; }
+      acc += segL;
+    }
+    if (run) out.push(run);
+    return out;
+  }
   function resample(cs, step) {
     if (cs.length < 2) return cs.slice(); const cum = cumul(cs), L = cum[cs.length - 1], out = [];
     const n = Math.max(1, Math.round(L / step)); for (let i = 0; i <= n; i++) out.push(pointAt(cs, cum, L * i / n));
@@ -254,8 +270,16 @@
       if (!this.coords.length) return this._commit(piece);
       const end = this.end, nearEnd = D(pts[0], end) <= tolM || D(piece[0], end) <= tolM;
       if (!nearEnd && this.coords.length > 1) {
-        const s = locate(this.coords, pts[0]), e = locate(this.coords, pts[pts.length - 1]);
-        if (s.dist <= tolM && e.dist <= tolM && Math.abs(e.d - s.d) > tolM) {
+        // where the stroke starts and ends on the route; on overlapping legs pick the pair whose
+        // stretch of route is closest in length to the new piece (same leg, not across the turnaround)
+        const S0 = locateAll(this.coords, pts[0], tolM), E0 = locateAll(this.coords, pts[pts.length - 1], tolM), want = length(piece);
+        let best = null;
+        for (const s of S0) for (const e of E0) {
+          const span = Math.abs(e.d - s.d); if (span <= tolM) continue;
+          const score = Math.abs(span - want) + s.dist + e.dist; if (!best || score < best.score) best = { s, e, score };
+        }
+        if (best) {
+          const s = best.s, e = best.e;
           let a = s.d, b = e.d, p = piece; if (a > b) { [a, b] = [b, a]; p = piece.slice().reverse(); }
           const before = slice(this.coords, 0, a), after = slice(this.coords, b, this.distance);
           const c1 = this._connect(before[before.length - 1], p[0]) || [before[before.length - 1], p[0]];
@@ -313,5 +337,5 @@
     return { coords: decode(o.p), wps: (o.w || []).map(([lat, lon, title]) => ({ lat, lon, title: String(title || 'Waypoint'), notes: '' })) };
   }
 
-  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, gainLoss };
+  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, locateAll, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, gainLoss };
 });
