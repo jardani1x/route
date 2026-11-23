@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jalan Route Planner</title>
+<meta name="description" content="Plan walking, running and cycling routes in Singapore: trace a line and it snaps to roads and park connectors.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Saira+Semi+Condensed:wght@600;700&display=swap">
+<link rel="stylesheet" href="leaflet.css">
+<style>
+/* Layout idea: full-bleed map; floating cards like a map app — search + activity top-left, tools down the left edge,
+   undo/redo bottom-left, route stats with elevation along the bottom, menu and map controls on the right. */
+:root {
+  --bg: #eef1ee;
+  --card: #ffffff;
+  --ink: #15201b;
+  --muted: #5b6862;
+  --line: #dde3df;
+  --route: #ff5a1f;          /* the route: orange stays legible on street and satellite maps */
+  --accent: #0f766e;         /* controls and waypoints: deep teal */
+  --pcn: #1f9d55;            /* park connectors */
+  --danger: #d62d2d;
+  --road: #c3c9c5; --road-casing: #a6aea9; --road-fill: #ffffff; --label: #39443f; --halo: rgba(255,255,255,.92);
+  --font-display: "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --shadow: 0 4px 18px rgba(20, 32, 27, .18);
+  --radius: 14px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141917; --card: #1d2421; --ink: #e7eeea; --muted: #9aa8a1; --line: #303a35;
+    --route: #ff7a45; --accent: #2bb3a6; --pcn: #46c47c; --danger: #ff6b6b;
+    --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9);
+    --shadow: 0 4px 18px rgba(0,0,0,.5); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141917; --card: #1d2421; --ink: #e7eeea; --muted: #9aa8a1; --line: #303a35;
+  --route: #ff7a45; --accent: #2bb3a6; --pcn: #46c47c; --danger: #ff6b6b;
+  --road: #3b4540; --road-casing: #2a322e; --road-fill: #47524c; --label: #c8d3cd; --halo: rgba(20,25,23,.9);
+  --shadow: 0 4px 18px rgba(0,0,0,.5); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.4 var(--font-body); overflow: hidden; -webkit-tap-highlight-color: transparent; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+#map { position: absolute; inset: 0; background: var(--bg); }
+#map.tool-draw, #map.tool-draw .leaflet-interactive { cursor: crosshair; }
+#map.tool-erase, #map.tool-erase .leaflet-interactive { cursor: cell; }
+#map.tool-waypoint { cursor: copy; }
+.leaflet-container { background: var(--bg); font-family: var(--font-body); }
+.leaflet-control-attribution { font-size: 10.5px; background: color-mix(in srgb, var(--card) 82%, transparent) !important; color: var(--muted); }
+.leaflet-control-attribution a { color: var(--muted); }
+.card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); }
+.float { position: absolute; z-index: 1000; }
+
+/* search + activity */
+.searchcard { z-index: 1010; top: calc(env(safe-area-inset-top) + 12px); left: 12px; width: min(340px, calc(100% - 84px)); }
+.searchrow { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.searchrow svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+.searchrow input { border: 0; background: none; padding: 12px 0; width: 100%; outline: none; }
+.activityrow { display: flex; align-items: center; gap: 8px; padding: 2px 10px; }
+.activityrow select { border: 0; background: none; padding: 9px 0; width: 100%; font-weight: 600; }
+.results { max-height: 46vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.results button { display: grid; width: 100%; text-align: left; border: 0; background: none; padding: 9px 12px; gap: 1px; border-bottom: 1px solid var(--line); }
+.results button:hover, .results button:focus-visible { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.results .t { font-weight: 600; }
+.results .d { font-size: 12.5px; color: var(--muted); }
+
+/* tools */
+.tools { top: calc(env(safe-area-inset-top) + 124px); left: 12px; display: grid; gap: 10px; }
+.tool { width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--card); box-shadow: var(--shadow); display: grid; place-items: center; color: var(--ink); position: relative; }
+.tool svg { width: 22px; height: 22px; }
+.tool[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.tool.snap[aria-pressed="false"] { color: var(--muted); }
+.tool.snap[aria-pressed="false"]::after { content: ""; position: absolute; width: 30px; height: 2.5px; background: var(--danger); transform: rotate(-45deg); border-radius: 2px; }
+.tool .key { position: absolute; right: -4px; bottom: -4px; font: 600 10px/1 var(--font-body); background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; }
+@media (hover: none) { .tool .key { display: none; } }
+
+/* undo / redo / clear */
+.history { left: 12px; bottom: calc(env(safe-area-inset-bottom) + 14px); display: flex; padding: 4px; gap: 2px; }
+.history button { border: 0; background: none; width: 42px; height: 40px; border-radius: 10px; display: grid; place-items: center; }
+.history button:disabled { opacity: .35; cursor: default; }
+.history button:not(:disabled):hover { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.history svg { width: 20px; height: 20px; }
+
+/* stats */
+.stats { left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 14px); width: min(560px, calc(100% - 200px)); padding: 10px 14px 8px; display: grid; gap: 6px; }
+.statrow { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+.stat { display: grid; }
+.stat .v { font: 700 30px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.stat .v small { font-size: 15px; color: var(--muted); margin-left: 2px; }
+.stat .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.stat.small .v { font-size: 20px; }
+.finishbtn { margin-left: auto; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 14px; font-weight: 600; }
+.chart { position: relative; height: 70px; }
+.chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.chart .msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12.5px; color: var(--muted); text-align: center; padding: 0 10px; }
+.chart .tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--ink); color: var(--card); font-size: 12px; padding: 3px 7px; border-radius: 6px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
+.hintline { font-size: 13px; color: var(--muted); }
+
+/* right side */
+.topright { top: calc(env(safe-area-inset-top) + 12px); right: 12px; display: flex; gap: 8px; }
+.roundbtn { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--card); box-shadow: var(--shadow); display: grid; place-items: center; color: var(--ink); }
+.roundbtn svg { width: 20px; height: 20px; }
+.mapctl { right: 12px; bottom: calc(env(safe-area-inset-bottom) + 14px); display: grid; gap: 10px; }
+.zoomgroup { display: grid; overflow: hidden; }
+.zoomgroup button { border: 0; background: none; width: 44px; height: 42px; font-size: 22px; line-height: 1; }
+.zoomgroup button + button { border-top: 1px solid var(--line); }
+
+/* popovers, drawer, dialogs */
+.popover { position: absolute; z-index: 1150; min-width: 220px; padding: 6px; display: grid; gap: 2px; }
+.popover h4 { margin: 6px 8px 4px; font: 700 13px/1.2 var(--font-body); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.popover button { text-align: left; border: 0; background: none; padding: 9px 10px; border-radius: 9px; display: flex; gap: 10px; align-items: center; }
+.popover button:hover, .popover button:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.popover button[aria-checked="true"]::after { content: "✓"; margin-left: auto; color: var(--accent); font-weight: 700; }
+.popover .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.popover .row { display: flex; gap: 6px; align-items: center; padding: 4px 10px 8px; }
+.popover .row input { width: 70px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.popover .row button { padding: 6px 10px; border: 1px solid var(--line); }
+.drawer { position: absolute; z-index: 1200; top: 0; right: 0; bottom: 0; width: min(380px, 100%); background: var(--card); box-shadow: var(--shadow); padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 16px); overflow-y: auto; display: grid; align-content: start; gap: 20px; transform: translateX(105%); transition: transform .2s ease; }
+.drawer.open { transform: none; }
+@media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+.drawer header { display: flex; justify-content: space-between; align-items: center; }
+.drawer h2 { margin: 0; font: 700 24px/1 var(--font-display); }
+.drawer h3 { margin: 0 0 8px; font: 700 12.5px/1.2 var(--font-body); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.btn { border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 12px; font-weight: 600; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { color: var(--danger); }
+.btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.list { display: grid; gap: 6px; }
+.item { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 11px; padding: 8px 8px 8px 11px; }
+.item .open { all: unset; cursor: pointer; display: grid; gap: 1px; min-width: 0; }
+.item .open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.item .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .d { font-size: 12.5px; color: var(--muted); }
+.item .acts { display: flex; gap: 2px; }
+.item .acts button { border: 0; background: none; color: var(--muted); font-size: 13px; font-weight: 600; padding: 6px 7px; border-radius: 7px; }
+.item .acts button:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
+.small { font-size: 12.5px; color: var(--muted); }
+.small a { color: var(--accent); }
+.check { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 4px 0; }
+.check input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+.field { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 4px 0; }
+.field input, .field select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); width: 110px; }
+.scrim { position: absolute; inset: 0; z-index: 1190; background: rgba(0,0,0,.28); }
+dialog { border: 0; border-radius: var(--radius); background: var(--card); color: var(--ink); box-shadow: var(--shadow); padding: 16px; width: min(380px, calc(100% - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog form { display: grid; gap: 12px; }
+dialog h3 { margin: 0; font: 700 20px/1.1 var(--font-display); }
+dialog label { display: grid; gap: 4px; font-weight: 600; font-size: 14px; }
+dialog input, dialog textarea { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); font-weight: 400; }
+dialog textarea { min-height: 70px; resize: vertical; }
+.toast { position: absolute; z-index: 1300; left: 50%; top: calc(env(safe-area-inset-top) + 16px); transform: translateX(-50%); background: var(--ink); color: var(--card); padding: 9px 14px; border-radius: 10px; font-size: 14px; box-shadow: var(--shadow); max-width: min(520px, calc(100% - 32px)); }
+.banner { position: absolute; z-index: 1001; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top) + 12px); background: var(--card); box-shadow: var(--shadow); border-radius: 999px; padding: 6px 12px; font-size: 12.5px; color: var(--muted); max-width: calc(100% - 460px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.loading { position: absolute; inset: 0; z-index: 1400; display: grid; place-items: center; background: var(--bg); font: 600 18px var(--font-display); color: var(--muted); text-align: center; padding: 24px; }
+.dropzone { position: absolute; inset: 0; z-index: 1350; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 22%, transparent); border: 3px dashed var(--accent); font: 700 22px var(--font-display); color: var(--ink); pointer-events: none; }
+
+/* map markers */
+.mk { display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.4); font: 700 11px/1 var(--font-body); color: #fff; }
+.mk.start { width: 20px; height: 20px; background: #16a34a; }
+.mk.end { width: 20px; height: 20px; background: #15201b; }
+.mk.km { width: 20px; height: 20px; border-width: 2px; background: #fff; color: var(--route); border-color: var(--route); font: 700 10.5px/1 var(--font-display); }
+.mk.wp { width: 28px; height: 28px; background: var(--accent); font-size: 13px; }
+.mk.me { width: 18px; height: 18px; background: #2563eb; }
+.mk.hover { width: 14px; height: 14px; background: var(--route); border-width: 2px; }
+
+@media (max-width: 720px) {
+  .stats { left: 12px; right: 12px; width: auto; transform: none; bottom: calc(env(safe-area-inset-bottom) + 66px); padding: 8px 12px 6px; }
+  .stat .v { font-size: 26px; }
+  .chart { height: 54px; }
+  .history { bottom: calc(env(safe-area-inset-bottom) + 12px); }
+  .mapctl { bottom: calc(env(safe-area-inset-bottom) + 12px); grid-auto-flow: column; }
+  .zoomgroup { grid-auto-flow: column; }
+  .zoomgroup button + button { border-top: 0; border-left: 1px solid var(--line); }
+  .banner { display: none; }
+  .tools { top: calc(env(safe-area-inset-top) + 118px); }
+}
+</style>
+</head>
+<body>
+<div id="map" role="application" aria-label="Route map"></div>
+
+<div class="float card searchcard" id="searchCard">
+  <div class="searchrow">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="search" type="search" placeholder="Search a place, street or park connector" autocomplete="off" aria-label="Search a place" aria-controls="results">
+  </div>
+  <div class="activityrow">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="13" cy="4" r="2"/><path d="m7 21 3-6 3 2v5M10 15l1-5 4 2 3-1M8 10l3-1"/></svg>
+    <label class="sr" for="activity" hidden>Activity</label>
+    <select id="activity" aria-label="Activity">
+      <option value="walk">Walking</option>
+      <option value="run" selected>Running</option>
+      <option value="cycle">Cycling</option>
+    </select>
+  </div>
+  <div class="results" id="results" role="listbox" hidden></div>
+</div>
+
+<div class="float tools" role="toolbar" aria-label="Drawing tools" aria-orientation="vertical">
+  <button type="button" class="tool" id="toolDraw" aria-pressed="false" title="Draw a route (Enter)" aria-label="Draw a route">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17c3-1 4-6 7-6s3 4 6 4 3-5 5-7"/><circle cx="3" cy="17" r="1.5" fill="currentColor"/></svg><span class="key">↵</span>
+  </button>
+  <button type="button" class="tool snap" id="toolSnap" aria-pressed="true" title="Snap to roads and paths (Shift)" aria-label="Snap to roads and paths">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3v8a6 6 0 0 0 12 0V3"/><path d="M6 7h4M14 7h4"/></svg><span class="key">⇧</span>
+  </button>
+  <button type="button" class="tool" id="toolErase" aria-pressed="false" title="Eraser (E)" aria-label="Eraser">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m15 4 5 5-9 9H6l-3-3z"/><path d="m10 9 5 5M11 18h9"/></svg><span class="key">E</span>
+  </button>
+  <button type="button" class="tool" id="toolWaypoint" aria-pressed="false" title="Add waypoint (K)" aria-label="Add waypoint">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11z"/><path d="M12 7v5M9.5 9.5h5"/></svg><span class="key">K</span>
+  </button>
+</div>
+
+<div class="float card history" role="group" aria-label="History">
+  <button type="button" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button>
+  <button type="button" id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg></button>
+  <button type="button" id="clearBtn" title="Clear route" aria-label="Clear route"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+</div>
+
+<section class="float card stats" id="stats" aria-label="Route statistics">
+  <div class="statrow">
+    <div class="stat"><span class="v" id="statDist">0.00<small>km</small></span><span class="l">Distance</span></div>
+    <div class="stat small"><span class="v" id="statTime">0:00</span><span class="l" id="statTimeLabel">Running time</span></div>
+    <div class="stat small"><span class="v" id="statGain">–</span><span class="l">Climb</span></div>
+    <button type="button" class="finishbtn" id="finishBtn" aria-haspopup="menu">Finish route</button>
+  </div>
+  <div class="chart" id="chart" aria-label="Elevation profile"><div class="msg" id="chartMsg">Tap the map to start a route, or press Draw and trace it.</div></div>
+</section>
+
+<div class="float topright">
+  <button type="button" class="roundbtn" id="menuBtn" aria-label="Routes and settings" aria-expanded="false" aria-controls="drawer" title="Routes and settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+</div>
+<div class="banner" id="banner" hidden></div>
+
+<div class="float mapctl">
+  <div class="card zoomgroup"><button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in (+)">+</button><button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out (−)">−</button></div>
+  <button type="button" class="roundbtn" id="locateBtn" aria-label="Show my location" title="Show my location"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m3 11 18-8-8 18-2-8z"/></svg></button>
+  <button type="button" class="roundbtn" id="layersBtn" aria-label="Map layers" title="Map layers" aria-haspopup="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg></button>
+</div>
+
+<div class="card popover" id="layersPop" role="menu" hidden></div>
+<div class="card popover" id="finishPop" role="menu" hidden></div>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" aria-label="Routes and settings">
+  <header><h2>Routes</h2><button type="button" class="btn" id="closeDrawer">Close</button></header>
+  <section>
+    <h3>This route</h3>
+    <div class="btnrow">
+      <button type="button" class="btn primary" id="saveBtn">Save</button>
+      <button type="button" class="btn" id="exportBtn">Export GPX</button>
+      <button type="button" class="btn" id="importBtn">Import GPX</button>
+      <button type="button" class="btn" id="shareBtn">Copy share link</button>
+    </div>
+    <input type="file" id="importFile" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+    <p class="small" id="exportNote"></p>
+  </section>
+  <section>
+    <h3>Saved routes</h3>
+    <div class="list" id="savedList"></div>
+    <p class="small" id="storeNote"></p>
+  </section>
+  <section>
+    <h3>Settings</h3>
+    <div class="field"><label for="units">Units</label><select id="units"><option value="km">Kilometres</option><option value="mi">Miles</option></select></div>
+    <div class="field"><label for="pace">Pace for <span id="paceAct">running</span> (min:sec per <span id="paceUnit">km</span>)</label><input id="pace" type="text" inputmode="numeric"></div>
+    <label class="check" for="showPcn"><input type="checkbox" id="showPcn" checked><span>Show park connectors on the map</span></label>
+    <label class="check" for="preferPcn"><input type="checkbox" id="preferPcn" checked><span>Prefer park connectors when snapping a tap</span></label>
+    <label class="check" for="avoidClosures"><input type="checkbox" id="avoidClosures" checked><span>Avoid the Kallang park connector closure at St Andrew's Village and St Michael's estate (NParks, until 2nd half 2027; extent approximated)</span></label>
+  </section>
+  <section>
+    <h3>How it works</h3>
+    <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to roads and park connectors. Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap. Turn <b>Snap</b> off to draw straight lines anywhere.</p>
+    <p class="small">Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors, drawn on centrelines. Unnamed footpaths are not in the network yet. Elevation comes from a 90 m terrain model, so treat it as a guide.</p>
+    <p class="small">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>; park connectors © NParks via data.gov.sg; elevation <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>.</p>
+  </section>
+</aside>
+
+<dialog id="wpDialog" aria-labelledby="wpTitle">
+  <form method="dialog" id="wpForm">
+    <h3 id="wpTitle">Waypoint</h3>
+    <label>Name<input id="wpName" type="text" maxlength="60" autocomplete="off"></label>
+    <label>Notes<textarea id="wpNotes" maxlength="400"></textarea></label>
+    <div class="btnrow" style="justify-content: space-between">
+      <button type="button" class="btn danger" id="wpDelete">Delete</button>
+      <span class="btnrow"><button type="button" class="btn" id="wpCancel">Cancel</button><button type="submit" class="btn primary">Save</button></span>
+    </div>
+  </form>
+</dialog>
+<dialog id="saveDialog" aria-labelledby="saveTitle">
+  <form method="dialog" id="saveForm">
+    <h3 id="saveTitle">Save route</h3>
+    <label>Name<input id="saveName" type="text" maxlength="80" autocomplete="off" required></label>
+    <div class="btnrow" style="justify-content: flex-end"><button type="button" class="btn" id="saveCancel">Cancel</button><button type="submit" class="btn primary">Save</button></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<div class="dropzone" id="dropzone" hidden>Drop a GPX file to open it</div>
+<div class="loading" id="loading">Loading Singapore's roads and park connectors…</div>
+
+<script src="config.js"></script>
+<script src="leaflet.js"></script>
+<script src="core.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

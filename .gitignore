@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+*.zip
+export_test.gpx
+shot_*.png
+.DS_Store
