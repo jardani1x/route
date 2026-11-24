@@ -51,6 +51,8 @@ async def run_a(p):
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(f'pageerror: {e}'))
     pg.on('console', lambda m: errs.append(f'console.{m.type}: {m.text}') if m.type == 'error' and 'Failed to load resource' not in m.text else None)
+    # map tiles and Open-Meteo unreachable, the same in CI (which has internet) as offline
+    await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com|api\.open-meteo\.com'), lambda r: r.abort())
     await serve_network(pg)
     await pg.goto(URL + URL_Q); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
     r = results['A'] = {}
