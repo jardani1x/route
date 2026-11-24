@@ -1,6 +1,8 @@
-// Checks a built footpath network (run-net-2) on real routes between public places.
-// Usage: node tests/test_network_v2.js path/to/net-v2.json   (skips, exit 0, if the file is missing)
-const fs = require('fs');
+// Checks a built footpath network on real routes between public places.
+// Usage: node tests/test_network_v2.js net-v3.bin.gz [net-v2.json]
+//   The first file (binary run-net-3 or JSON run-net-2) is tested; if a second is given, the two must
+//   describe the same network. Skips (exit 0) if the first file is missing.
+const fs = require('fs'), zlib = require('zlib');
 const RC = require('../core.js');
 const E = require('../engine.js');
 const file = process.argv[2];
@@ -8,8 +10,19 @@ if (!file || !fs.existsSync(file)) { console.log('SKIP  no footpath network file
 let fails = 0;
 const ok = (cond, msg) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) fails++; };
 
-let t = Date.now(); const net = RC.Network.fromText(fs.readFileSync(file, 'utf8')); const loadMs = Date.now() - t;
-ok(net.hasPaths && loadMs < 4000, `loads: ${net.E} edges in ${loadMs} ms`);
+const load = (f) => (f.endsWith('.gz') ? RC.Network.fromBinary(zlib.gunzipSync(fs.readFileSync(f))) : RC.Network.fromText(fs.readFileSync(f, 'utf8')));
+let t = Date.now(); const net = load(file); const loadMs = Date.now() - t;
+ok(net.hasPaths && loadMs < 4000, `loads ${file.split('/').pop()}: ${net.E} edges in ${loadMs} ms (${net.meta.format})`);
+if (process.argv[3]) {   // same network in two formats: same edges, kinds, flags, names; lengths within rounding
+  const other = load(process.argv[3]);
+  const sig = (n) => { const m = new Map(); let L = 0;
+    for (let e = 0; e < n.E; e++) { const k = `${n.eKind[e]}|${n.eFlag[e]}|${n.nameOf(e) || ''}`; m.set(k, (m.get(k) || 0) + 1); L += n.eLen[e]; }
+    return { m, L }; };
+  const a = sig(net), b = sig(other);
+  const same = a.m.size === b.m.size && [...a.m].every(([k, v]) => b.m.get(k) === v);
+  ok(net.E === other.E && net.N === other.N && same && Math.abs(a.L - b.L) / b.L < 0.001,
+    `same network as ${process.argv[3].split('/').pop()}: ${net.E}/${other.E} edges, ${net.N}/${other.N} nodes, ${(a.L / 1000).toFixed(1)}/${(b.L / 1000).toFixed(1)} km`);
+}
 const v1 = RC.Network.fromText(fs.readFileSync(__dirname + '/../net.json', 'utf8'));
 const def = new E.Router(net, 'roads'), all = new E.Router(net, 'all'), old = new E.Router(v1);
 const estateM = (coords) => {  // metres of a path that run on estate-only edges (not links)

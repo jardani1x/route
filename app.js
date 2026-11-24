@@ -18,13 +18,14 @@
   const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true, paths: 'roads' }, saved);
   S.paces = Object.assign({ walk: 720, run: 360 }, saved.paces || {});
   if (!ACT[S.activity]) S.activity = 'run';
-  let tool = 'pan', net = null, router = null, editor = null, tilesBlocked = false;
+  let tool = 'pan', net = null, backend = null, editor = null, tilesBlocked = false;
   const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures, paths: S.paths });
 
   // ---------------- small UI helpers ----------------
   let toastT = 0;
   function toast(msg, ms = 3200) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms); }
-  const report = (r) => { if (r && (!r.ok || r.note) && (r.msg || r.note)) toast(r.msg || r.note); return r; };
+  // editor commands return promises (the work happens in a Web Worker); report shows their messages
+  const report = (r) => Promise.resolve(r).then((x) => { if (x && (!x.ok || x.note) && (x.msg || x.note)) toast(x.msg || x.note); return x; });
   const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const fmtDist = (m, dp = 2) => (S.units === 'mi' ? (m / MI).toFixed(dp) : (m / 1000).toFixed(dp));
   const unitLabel = () => (S.units === 'mi' ? 'mi' : 'km');
@@ -49,10 +50,10 @@
     maxBounds: [[1.10, 103.50], [1.55, 104.20]], maxBoundsViscosity: 0.8 }).setView(CFG.center, CFG.zoom);
   map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
   const TILE = 256;
-  let PX = null, PY = null;
-  const merc = (la) => { const s = Math.sin(la * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE; };
+  let PX = null, PY = null, PX0 = 0, PY0 = 0;   // vertex pixels at zoom 0, as 32-bit offsets from (PX0, PY0)
   const unmercY = (y) => { const n = Math.PI - 2 * Math.PI * y / TILE; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); };
-  function themeColors() { return { road: cssVar('--road'), casing: cssVar('--road-casing'), fill: cssVar('--road-fill'), pcn: cssVar('--pcn'), path: cssVar('--path'), label: cssVar('--label'), halo: cssVar('--halo'), font: cssVar('--font-body') }; }
+  let themeCache = null;  // read once per repaint: getComputedStyle per tile adds up
+  function themeColors() { return themeCache || (themeCache = { road: cssVar('--road'), casing: cssVar('--road-casing'), fill: cssVar('--road-fill'), pcn: cssVar('--pcn'), path: cssVar('--path'), label: cssVar('--label'), halo: cssVar('--halo'), font: cssVar('--font-body') }); }
   function strokeEdges(ctx, ids, sc, ox, oy, test) {
     ctx.beginPath();
     for (const e of ids) {
@@ -83,36 +84,41 @@
       ctx.fillStyle = kind === 1 ? th.pcn : th.label; ctx.fillText(name, 0, 0); ctx.restore(); seen.add(name);
     }
   }
-  /** Canvas tiles drawn from the bundled network: the offline basemap (roads + PCN) or a PCN-only overlay. */
+  /** Canvas tiles drawn from the network: the offline basemap (roads + PCN) or a PCN-only overlay.
+   *  Each tile is painted in its own task (Leaflet's async tiles), so a screenful of tiles never freezes the page. */
   const NetLayer = L.GridLayer.extend({
-    createTile(c) {
+    createTile(c, done) {
       const cv = document.createElement('canvas'), r = Math.min(window.devicePixelRatio || 1, 2);
-      cv.width = cv.height = TILE * r; if (!net) return cv;
+      cv.width = cv.height = TILE * r; if (!net) { setTimeout(() => done(null, cv), 0); return cv; }
+      setTimeout(() => { if (this._map) this.paint(cv, c, r); done(null, cv); }, 0);
+      return cv;
+    },
+    paint(cv, c, r) {
       const ctx = cv.getContext('2d'); ctx.scale(r, r); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       const z = c.z, sc = Math.pow(2, z), ox = c.x * TILE, oy = c.y * TILE, pad = 24, roads = this.options.roads;
       const n = unmercY((oy - pad) / sc), s = unmercY((oy + TILE + pad) / sc), w = (ox - pad) / sc / TILE * 360 - 180, e = (ox + TILE + pad) / sc / TILE * 360 - 180;
       const ids = net.edgesIn(s, w, n, e), th = themeColors();
+      const qx = ox - PX0 * sc, qy = oy - PY0 * sc;   // tile origin in the offset pixel space of PX/PY
       const isRoad = (id) => net.eKind[id] === 0, isService = (id) => net.eKind[id] === 6, isPcn = (id) => net.eKind[id] === 1;
       const isPath = (id) => { const k = net.eKind[id]; return k === 2 || k === 3 || k === 4 || k === 5; };
       if (roads && z >= 15 && net.hasPaths) {  // footpaths, pavements, crossings and steps under the roads
         ctx.strokeStyle = th.path; ctx.lineWidth = z >= 17 ? 1.6 : 1; ctx.setLineDash(z >= 16 ? [3, 3] : []);
-        strokeEdges(ctx, ids, sc, ox, oy, isPath); ctx.setLineDash([]);
+        strokeEdges(ctx, ids, sc, qx, qy, isPath); ctx.setLineDash([]);
       }
       if (roads) {
         if (z >= 15) {
           const rw = z >= 18 ? 9 : z >= 17 ? 7 : z >= 16 ? 5 : 3.2, sw = rw * 0.55;  // service roads drawn narrower
-          ctx.strokeStyle = th.casing; ctx.lineWidth = sw + 1.4; strokeEdges(ctx, ids, sc, ox, oy, isService);
-          ctx.strokeStyle = th.fill; ctx.lineWidth = sw; strokeEdges(ctx, ids, sc, ox, oy, isService);
-          ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, ox, oy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, ox, oy, isRoad);
+          ctx.strokeStyle = th.casing; ctx.lineWidth = sw + 1.4; strokeEdges(ctx, ids, sc, qx, qy, isService);
+          ctx.strokeStyle = th.fill; ctx.lineWidth = sw; strokeEdges(ctx, ids, sc, qx, qy, isService);
+          ctx.strokeStyle = th.casing; ctx.lineWidth = rw + 1.6; strokeEdges(ctx, ids, sc, qx, qy, isRoad); ctx.strokeStyle = th.fill; ctx.lineWidth = rw; strokeEdges(ctx, ids, sc, qx, qy, isRoad);
         }
-        else { ctx.strokeStyle = th.road; ctx.lineWidth = z >= 14 ? 1.6 : z >= 13 ? 1.1 : 0.7; strokeEdges(ctx, ids, sc, ox, oy, isRoad); }
+        else { ctx.strokeStyle = th.road; ctx.lineWidth = z >= 14 ? 1.6 : z >= 13 ? 1.1 : 0.7; strokeEdges(ctx, ids, sc, qx, qy, isRoad); }
       }
       if (this.options.pcn) {
-        if (!roads) { ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = (z >= 15 ? 3 : 2) + 2.5; strokeEdges(ctx, ids, sc, ox, oy, isPcn); }
-        ctx.strokeStyle = th.pcn; ctx.lineWidth = z >= 17 ? 4 : z >= 15 ? 3 : z >= 13 ? 2 : 1.4; strokeEdges(ctx, ids, sc, ox, oy, isPcn);
+        if (!roads) { ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = (z >= 15 ? 3 : 2) + 2.5; strokeEdges(ctx, ids, sc, qx, qy, isPcn); }
+        ctx.strokeStyle = th.pcn; ctx.lineWidth = z >= 17 ? 4 : z >= 15 ? 3 : z >= 13 ? 2 : 1.4; strokeEdges(ctx, ids, sc, qx, qy, isPcn);
       }
-      if (z >= 15) drawLabels(ctx, ids, sc, ox, oy, z, th, roads);
-      return cv;
+      if (z >= 15) drawLabels(ctx, ids, sc, qx, qy, z, th, roads);
     },
   });
   const offlineBase = new NetLayer({ tileSize: TILE, roads: true, pcn: true, updateWhenZooming: false, keepBuffer: 3, attribution: 'Roads © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> · Park connectors © NParks' });
@@ -163,7 +169,7 @@
     showBanner(TOOL_HINT[tool] || (tilesBlocked ? 'Offline map of streets, paths and park connectors.' : ''));
     if (editor) renderRoute();
   }
-  function setSnap(v) { editor.snap = v; $('#toolSnap').setAttribute('aria-pressed', String(v)); toast(v ? 'Snap to roads and paths: on' : 'Snap off: lines go exactly where you draw', 1800); }
+  function setSnap(v) { editor.setSnap(v); $('#toolSnap').setAttribute('aria-pressed', String(v)); toast(v ? 'Snap to roads and paths: on' : 'Snap off: lines go exactly where you draw', 1800); }
   function showBanner(text) { const b = $('#banner'); b.textContent = text || ''; b.hidden = !text; }
 
   const mapEl = map.getContainer(), pointers = new Set();
@@ -289,6 +295,7 @@
           .bindTooltip(`${c.title} (until ${c.untilLabel || c.until})`, { sticky: true }).addTo(closureLayer);
       }
     }
+    backend.blocked(closures.flatMap(c => c.edges));
   }
   /** Names of closures the route really runs along: two consecutive samples (~20 m apart) on a closed
    *  stretch, ignoring the 10 m at each end of it (a detour that turns off where a closure begins is fine). */
@@ -518,8 +525,7 @@
     $('#storeNote').textContent = 'Saved in this browser only. Export a GPX to keep a copy.';
   }
   function loadRoute(coords, wps) {
-    editor.load(coords, wps.map(w => ({ lat: w.lat, lon: w.lon, title: w.title || 'Waypoint', notes: w.notes || '' })));
-    fitRoute();
+    return editor.load(coords, wps.map(w => ({ lat: w.lat, lon: w.lon, title: w.title || 'Waypoint', notes: w.notes || '' }))).then((r) => { fitRoute(); return r; });
   }
   function fitRoute() {
     const pts = editor.coords.concat(editor.wps.map(w => [w.lat, w.lon])); if (!pts.length) return;
@@ -568,7 +574,7 @@
     try {
       const g = parseGpxDom(await f.text());
       if (!g.pts.length && !g.wps.length) { toast('No track, route or waypoints found in that file.'); return; }
-      loadRoute(g.pts, g.wps); closeDrawer(); toast(`Opened ${g.name || f.name}: ${fmtDist(editor.distance)} ${unitLabel()}`);
+      closeDrawer(); await loadRoute(g.pts, g.wps); toast(`Opened ${g.name || f.name}: ${fmtDist(editor.distance)} ${unitLabel()}`);
     } catch (e) { toast(e.message || 'Could not read that file.'); }
   }
   // drag & drop a GPX anywhere
@@ -597,12 +603,12 @@
     S.paces[S.activity] = S.units === 'mi' ? v * 1000 / MI : v; saveSettings(); syncSettings(); renderStats();
   });
   $('#showPcn').addEventListener('change', (e) => { S.showPcn = e.target.checked; saveSettings(); setBasemap(activeBase === offlineBase ? 'offline' : S.basemap, true); });
-  $('#preferPcn').addEventListener('change', (e) => { S.preferPcn = e.target.checked; router.pcnFactor = S.preferPcn ? 0.8 : 1; saveSettings(); });
+  $('#preferPcn').addEventListener('change', (e) => { S.preferPcn = e.target.checked; if (backend) backend.settings({ pcnFactor: S.preferPcn ? 0.8 : 1 }); saveSettings(); });
   $('#paths').addEventListener('change', (e) => {
     S.paths = e.target.value; saveSettings();
-    if (router) { router.setProfile(S.paths); toast(S.paths === 'all' ? 'New legs can use any footpath' : 'New legs keep out of housing estates'); }
+    if (backend) { backend.settings({ profile: S.paths }); toast(S.paths === 'all' ? 'New legs can use any footpath' : 'New legs keep out of housing estates'); }
   });
-  $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; router.avoidClosures = S.avoidClosures; saveSettings(); renderStats(); });
+  $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; if (backend) backend.settings({ avoidClosures: S.avoidClosures }); saveSettings(); renderStats(); });
 
   // ---------------- map controls ----------------
   $('#zoomIn').addEventListener('click', () => map.zoomIn());
@@ -625,7 +631,7 @@
   $('#toolSnap').addEventListener('click', () => setSnap(!editor.snap));
   $('#undoBtn').addEventListener('click', () => report(editor.undo()));
   $('#redoBtn').addEventListener('click', () => report(editor.redo()));
-  $('#clearBtn').addEventListener('click', () => { if (report(editor.clear()).ok) toast('Cleared. Undo brings it back.'); });
+  $('#clearBtn').addEventListener('click', () => report(editor.clear()).then((r) => { if (r.ok) toast('Cleared. Undo brings it back.'); }));
   $('#menuBtn').addEventListener('click', openDrawer); $('#closeDrawer').addEventListener('click', closeDrawer); $('#scrim').addEventListener('click', closeDrawer);
   document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.popover, #layersBtn, #finishBtn, .leaflet-marker-icon')) closePops(); if (!e.target.closest('#searchCard')) $('#results').hidden = true; });
 
@@ -659,38 +665,113 @@
   document.addEventListener('keyup', (e) => { if (e.key === ' ') { if (spacePan) e.preventDefault(); setSpacePan(false); } if (e.key === 'Shift' && shiftAlone && !typing(e.target) && editor) setSnap(!editor.snap); shiftAlone = false; });
 
   // theme changes repaint canvas tiles and the route colours
-  const repaint = () => { offlineBase.redraw(); pcnOverlay.redraw(); if (editor) renderRoute(); };
+  const repaint = () => { themeCache = null; offlineBase.redraw(); pcnOverlay.redraw(); if (editor) renderRoute(); };
   const mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', repaint);
   new MutationObserver(repaint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('resize', () => { if (elevState === 'ok') drawChart(); });
 
-  function loadExample() {
+  async function loadExample() {
     if (editor.coords.length) editor.clear();
-    editor.addPoint(...EXAMPLE.taps[0], 100); for (const t of EXAMPLE.taps.slice(1)) editor.addPoint(...t, 100);
-    editor.outAndBack(); fitRoute(); toast('Example loaded: Bishan Road bridge to Braddell Road and back. Undo removes it.', 4500);
+    for (const t of EXAMPLE.taps) editor.addPoint(...t, 100);
+    await editor.outAndBack(); fitRoute(); toast('Example loaded: Bishan Road bridge to Braddell Road and back. Undo removes it.', 4500);
+  }
+
+  // ---------------- backend (Web Worker) ----------------
+  /** Starts RouteBackend (backend.js) in a Web Worker; if workers are unavailable, or ?worker=0, runs it
+   *  in this page instead. Either way messages are handled one at a time, in order. */
+  function makeEngine(onMessage) {
+    const inline = () => {
+      const be = window.RouteBackend((msg) => setTimeout(() => onMessage(msg), 0));
+      let q = Promise.resolve();
+      return { kind: 'inline', post: (m) => { q = q.then(() => be.handle(m)); } };
+    };
+    if (typeof Worker === 'function' && !/[?&]worker=0\b/.test(location.search)) {
+      try {
+        const w = new Worker('worker.js');
+        w.onmessage = (e) => onMessage(e.data);
+        w.onerror = (e) => { e.preventDefault(); onMessage({ t: 'workerError', msg: e.message || 'worker failed' }); };
+        return { kind: 'worker', post: (m) => w.postMessage(m), terminate: () => w.terminate(), inline };
+      } catch (e) { console.warn('worker', e.message); }
+    }
+    return inline();
+  }
+
+  /** The page's view of the route editor: a mirror of its state plus commands that return promises. */
+  class EditorProxy {
+    constructor(be) { this.be = be; this.coords = []; this.wps = []; this.snap = true; this._u = false; this._r = false; this.listeners = []; this.pending = new Map(); this.seq = 0; }
+    onChange(fn) { this.listeners.push(fn); }
+    get distance() { return RE.geo.length(this.coords); }
+    canUndo() { return this._u; }
+    canRedo() { return this._r; }
+    _cmd(op, ...args) {
+      const id = ++this.seq;
+      return new Promise((resolve) => { this.pending.set(id, resolve); busy(+1); this.be.post({ t: 'cmd', id, op, args }); });
+    }
+    _state(m) {
+      const done = this.pending.get(m.id); this.pending.delete(m.id); busy(-1);
+      if (m.state) { this.coords = m.state.coords; this.wps = m.state.wps; this._u = m.state.canUndo; this._r = m.state.canRedo; this.snap = m.state.snap; }
+      if (m.changed) for (const f of this.listeners) f(this);
+      if (done) done(m.result || { ok: false, msg: 'No answer from the route engine' });
+    }
+    /** The engine is gone: answer every edit still waiting, so nothing hangs. */
+    failAll(msg) { for (const [id] of this.pending) this._state({ id, result: { ok: false, msg } }); }
+    idle() { return this.pending.size ? new Promise((r) => { const t = setInterval(() => { if (!this.pending.size) { clearInterval(t); r(); } }, 20); }) : Promise.resolve(); }
+    setSnap(v) { this.snap = !!v; return this._cmd('setSnap', !!v); }
+  }
+  for (const op of ['addPoint', 'addTrace', 'erase', 'outAndBack', 'closeLoop', 'reverse', 'trim', 'clear', 'load', 'undo', 'redo', 'addWaypoint', 'updateWaypoint', 'removeWaypoint'])
+    EditorProxy.prototype[op] = function (...args) { return this._cmd(op, ...args); };
+
+  // a small "Working…" note when an edit takes a moment (long traces on slow phones)
+  let busyN = 0, busyT = 0;
+  function busy(d) {
+    busyN = Math.max(0, busyN + d); clearTimeout(busyT);
+    if (busyN) busyT = setTimeout(() => { $('#busy').hidden = false; }, 250); else $('#busy').hidden = true;
   }
 
   // ---------------- boot ----------------
   async function boot() {
     syncSettings();
     setBasemap(S.basemap in tileLayers || S.basemap === 'offline' ? S.basemap : 'street', true);
-    for (const url of CFG.networkUrls || [CFG.networkUrl]) {
-      try {
-        const r = await fetch(url); if (!r.ok) throw new Error(r.status);
-        net = RC.Network.fromText(await r.text()); break;
-      } catch (e) { console.warn('network', url, e.message); }
-    }
-    if (!net) { $('#loading').textContent = 'The map data did not load. Check your connection and reload the page.'; return; }
+    const urls = (CFG.networkUrls || [CFG.networkUrl]).filter(u => !/\.gz(\?|$)/.test(u) || typeof DecompressionStream === 'function');
+    const loadRequest = { t: 'load', urls: urls.map(u => new URL(u, location.href).href), settings: { profile: S.paths, pcnFactor: S.preferPcn ? 0.8 : 1, avoidClosures: S.avoidClosures } };
+    const waits = new Map(); let pathSeq = 0, onLoaded;
+    const loaded = new Promise((r) => { onLoaded = r; });
+    const onMessage = (m) => {
+      if (m.t === 'loaded' || m.t === 'failed') onLoaded(m);
+      else if (m.t === 'state') editor._state(m);
+      else if (m.t === 'settings') editor.profile = m.profile;
+      else if (m.t === 'path') { const f = waits.get(m.id); waits.delete(m.id); if (f) f(m.coords); }
+      else if (m.t === 'workerError' && engine.inline && !net) {  // the worker could not start: run the engine here
+        console.warn('worker failed, running the route engine in the page:', m.msg);
+        engine.terminate(); engine = engine.inline(); engine.post(loadRequest);
+      } else if (m.t === 'workerError') {
+        console.error('route engine:', m.msg);
+        const msg = 'The route engine stopped. Reload the page to keep editing (your route is kept as a draft).';
+        editor.failAll(msg); toast(msg, 8000);
+      } else if (m.t === 'error') console.error('route engine:', m.msg);
+    };
+    let engine = makeEngine(onMessage);
+    backend = {
+      get kind() { return engine.kind; },
+      post: (m) => engine.post(m),
+      settings: (o) => engine.post(Object.assign({ t: 'settings' }, o)),
+      blocked: (edges) => engine.post({ t: 'blocked', edges }),
+      path: (a, b) => new Promise((r) => { const id = ++pathSeq; waits.set(id, r); engine.post({ t: 'path', id, a, b }); }),
+    };
+    editor = new EditorProxy(backend);
+    const t0 = performance.now();
+    engine.post(loadRequest);
+    const res = await loaded;
+    if (res.t !== 'loaded') { console.warn('network', res.errors); $('#loading').textContent = 'The map data did not load. Check your connection and reload the page.'; return; }
+    net = RC.Network.fromParts(res.parts); editor.profile = res.profile;
+    console.info(`network ${res.url.split('/').pop()}: ${net.E} edges, loaded in ${res.ms} ms (${Math.round(performance.now() - t0)} ms to the page, engine: ${backend.kind})`);
     if (!net.hasPaths) {
       $('#networkNote').textContent = $('#networkNote').textContent.replace(/^Routing uses[^.]*\./, 'Routing uses named streets (OpenStreetMap, expressways left out) and NParks park connectors; footpaths could not be loaded.');
       $('#pathsNote').textContent = 'Footpaths could not be loaded, so routes keep to named streets and park connectors.';
     }
     syncSettings();
-    PX = new Float64Array(net.lat.length); PY = new Float64Array(net.lat.length);
-    for (let i = 0; i < net.lat.length; i++) { PX[i] = (net.lon[i] + 180) / 360 * TILE; PY[i] = merc(net.lat[i]); }
+    PX = res.parts.px; PY = res.parts.py; [PX0, PY0] = res.parts.pxy0;   // worked out in the worker
     await loadClosures();
-    router = new RE.Router(net, S.paths); router.pcnFactor = S.preferPcn ? 0.8 : 1; router.avoidClosures = S.avoidClosures;
-    editor = new RE.RouteEditor(router);
     let draftT = 0;
     editor.onChange(() => { renderRoute(); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', { poly: RE.encode(editor.coords), wps: editor.wps }), 400); });
     buildNameIndex();
@@ -698,14 +779,18 @@
     // open: shared link > last draft > example
     let opened = false;
     const m = /^#route=([\w-]+)$/.exec(location.hash);
-    if (m) { try { const s = RE.fromShare(m[1]); loadRoute(s.coords, s.wps); opened = true; toast('Opened a shared route'); } catch (e) { toast('That share link is damaged'); } }
+    if (m) { try { const sh = RE.fromShare(m[1]); await loadRoute(sh.coords, sh.wps); opened = true; toast('Opened a shared route'); } catch (e) { toast('That share link is damaged'); } }
     const draft = lsGet('draft', null);
-    if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { loadRoute(cs, draft.wps || []); opened = true; } }
+    if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { await loadRoute(cs, draft.wps || []); opened = true; } }
     if (!opened) renderRoute();
     $('#loading').hidden = true;
     if (tilesBlocked) showBanner('Offline map of streets, paths and park connectors.');
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { offlineBase.redraw(); pcnOverlay.redraw(); });
   }
-  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__jalan = { map, get editor() { return editor; }, get router() { return router; }, get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };  // automated tests only
+  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {  // automated tests only
+    window.__jalan = { map, get editor() { return editor; }, get net() { return net; }, get engine() { return backend && backend.kind; },
+      get profile() { return editor && editor.profile; }, idle: () => (editor ? editor.idle() : Promise.resolve()),
+      path: (a, b) => backend.path(a, b), get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };
+  }
   boot();
 })();

@@ -1,6 +1,7 @@
 # Usage: serve the site on port 8766 (python3 -m http.server 8766 from the site folder), then: python3 tests/smoke.py
-# With NET_FILE=/path/net-v2.json the footpath network is served from that file; without it the
-# footpath network is unreachable and the app must fall back to the bundled net.json.
+# With NET_FILE=/path/net-v3.bin.gz (or net-v2.json) the footpath network is served from that file; without it
+# the footpath network is unreachable and the app must fall back to the bundled net.json.
+# ENGINE=inline runs the route engine in the page (?worker=0) instead of the Web Worker.
 """Headless browser test of the Jalan Route Planner (served locally).
 Run A: tiles unreachable -> offline fallback; full editing workflow; save/export/import/share.
 Run B: tile servers stubbed with a local PNG -> online basemap stays, no fallback."""
@@ -11,18 +12,21 @@ URL = 'http://localhost:8766/index.html'
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
 results = {}
 NET_FILE = os.environ.get('NET_FILE')
+ENGINE = os.environ.get('ENGINE', 'worker')
+URL_Q = '?worker=0' if ENGINE == 'inline' else ''
 
 async def serve_network(pg):
     """The footpath network normally comes from raw.githubusercontent.com: serve NET_FILE, or make it unreachable."""
     async def handle(route):
-        if NET_FILE: await route.fulfill(status=200, path=NET_FILE, headers={'content-type': 'text/plain', 'access-control-allow-origin': '*'})
+        same_type = NET_FILE and NET_FILE.endswith('.gz') == route.request.url.endswith('.gz')
+        if same_type: await route.fulfill(status=200, path=NET_FILE, headers={'content-type': 'application/octet-stream' if NET_FILE.endswith('.gz') else 'text/plain', 'access-control-allow-origin': '*'})
         else: await route.abort()
-    await pg.route(re.compile(r'raw\.githubusercontent\.com/.+/net-v2\.json'), handle)
+    await pg.route(re.compile(r'raw\.githubusercontent\.com/.+/net-v[23]\.(json|bin\.gz)'), handle)
 
 async def pts_for(pg, a, b, noise=0):
     """Screen points along a routed path between two lat/lons (to drive the Draw tool like a finger)."""
-    return await pg.evaluate("""([a,b,noise]) => {
-      const J = window.__jalan, p = J.router.path(a, b); const out = [];
+    return await pg.evaluate("""async ([a,b,noise]) => {
+      const J = window.__jalan, p = await J.path(a, b); const out = [];
       const cs = window.RouteEngine.geo.resample(p, 12);
       let s = 3; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647 - .5; };
       for (const c of cs) { const q = J.map.latLngToContainerPoint(c); out.push([q.x + rnd() * noise, q.y + rnd() * noise]); }
@@ -35,7 +39,11 @@ async def drag(pg, pts):
     for x, y in pts[1:]: await pg.mouse.move(box['x'] + x, box['y'] + y, steps=2)
     await pg.mouse.up(); await pg.wait_for_timeout(400)
 
-async def dist(pg): return await pg.evaluate("window.__jalan.editor.distance")
+async def ev(pg, expr):
+    """Evaluate once the route engine has answered every edit sent so far."""
+    return await pg.evaluate(f"async () => {{ await window.__jalan.idle(); return ({expr}); }}")
+
+async def dist(pg): return await ev(pg, "window.__jalan.editor.distance")
 
 async def run_a(p):
     b = await p.chromium.launch(args=['--no-sandbox'])
@@ -44,14 +52,17 @@ async def run_a(p):
     pg.on('pageerror', lambda e: errs.append(f'pageerror: {e}'))
     pg.on('console', lambda m: errs.append(f'console.{m.type}: {m.text}') if m.type == 'error' and 'Failed to load resource' not in m.text else None)
     await serve_network(pg)
-    await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
+    await pg.goto(URL + URL_Q); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
     r = results['A'] = {}
-    r['footpath_network'] = await pg.evaluate("window.__jalan.router.net.hasPaths")
+    r['engine'] = await pg.evaluate("window.__jalan.engine")
+    r['network_file'] = await pg.evaluate("window.__jalan.net.meta.format")
+    r['footpath_network'] = await pg.evaluate("window.__jalan.net.hasPaths")
     r['paths_select_enabled'] = not await pg.locator('#paths').is_disabled()
     if r['footpath_network']:
-        await pg.select_option('#paths', 'all'); r['profile_after_all'] = await pg.evaluate("window.__jalan.router.profile")
-        await pg.select_option('#paths', 'roads')
-    r['profile'] = await pg.evaluate("window.__jalan.router.profile")
+        await pg.select_option('#paths', 'all'); await pg.wait_for_function("window.__jalan.profile === 'all'", timeout=5000)
+        r['profile_after_all'] = await pg.evaluate("window.__jalan.profile")
+        await pg.select_option('#paths', 'roads'); await pg.wait_for_function("window.__jalan.profile === 'roads'", timeout=5000)
+    r['profile'] = await pg.evaluate("window.__jalan.profile")
     r['empty_on_first_visit'] = await dist(pg) == 0
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(400)
     r['example_km'] = round(await dist(pg) / 1000, 3)
@@ -88,7 +99,7 @@ async def run_a(p):
     r['out_back_ratio'] = round(await dist(pg) / L, 4)
     # waypoint
     await pg.click('#toolWaypoint'); box = await pg.locator('#map').bounding_box(); await pg.mouse.click(box['x'] + 700, box['y'] + 300)
-    await pg.fill('#wpName', 'Water point'); await pg.click('#wpForm button[type=submit]'); r['waypoints'] = await pg.evaluate("window.__jalan.editor.wps.map(w => w.title)")
+    await pg.fill('#wpName', 'Water point'); await pg.click('#wpForm button[type=submit]'); r['waypoints'] = await ev(pg, "window.__jalan.editor.wps.map(w => w.title)")
     await pg.keyboard.press('k')
     r['elevation_msg'] = await pg.text_content('#chartMsg')
     # save + list
@@ -103,17 +114,17 @@ async def run_a(p):
     # import the exported file
     await pg.click('#closeDrawer'); await pg.click('#clearBtn')
     await pg.set_input_files('#importFile', path); await pg.wait_for_timeout(500)
-    r['import_km'] = round(await dist(pg) / 1000, 3); r['import_wps'] = await pg.evaluate("window.__jalan.editor.wps.length")
+    r['import_km'] = round(await dist(pg) / 1000, 3); r['import_wps'] = await ev(pg, "window.__jalan.editor.wps.length")
     # open the share link in a fresh page
     pg2 = await ctx.new_page(); await pg2.goto(link); await pg2.wait_for_selector('#loading', state='hidden', timeout=30000); await pg2.wait_for_timeout(500)
     r['share_open_km'] = round(await dist(pg2) / 1000, 3)
     # closures: drawn on the map; a route through one shows a warning when avoidance is off
     r['closure_segments_drawn'] = await pg.evaluate("document.querySelectorAll('.leaflet-overlay-pane path[stroke-dasharray=\"4 7\"]').length")
     await pg.click('#menuBtn'); await pg.uncheck('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn')
-    await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await pg.wait_for_timeout(300)
+    await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await ev(pg, "0"); await pg.wait_for_timeout(300)
     r['closure_warning'] = await pg.text_content('#closureWarn') if await pg.is_visible('#closureWarn') else ''
     await pg.click('#menuBtn'); await pg.check('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn')
-    await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await pg.wait_for_timeout(300)
+    await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await ev(pg, "0"); await pg.wait_for_timeout(300)
     r['closure_warning_when_avoiding'] = await pg.is_visible('#closureWarn')
     # search (offline index)
     await pg.fill('#search', 'kallang park'); await pg.wait_for_timeout(300); r['search_first'] = (await pg.locator('#results button .t').all_text_contents())[:3]
@@ -137,7 +148,7 @@ async def run_b(p):
     await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com'), tile)
     await pg.route(re.compile(r'api\.open-meteo\.com'), elev)
     await serve_network(pg)
-    await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=30000)
+    await pg.goto(URL + URL_Q); await pg.wait_for_selector('#loading', state='hidden', timeout=30000)
     await pg.click('#exampleBtn'); await pg.wait_for_timeout(3000)
     r = results['B'] = {}
     r['tiles_served'] = hits['tiles']; r['fallback'] = await pg.evaluate("window.__jalan.tilesBlocked")
@@ -147,10 +158,26 @@ async def run_b(p):
     r['errors'] = errs
     await b.close()
 
+async def run_c(p):
+    """The worker script cannot load: the page must run the engine itself and still route."""
+    b = await p.chromium.launch(args=['--no-sandbox']); ctx = await b.new_context(viewport={'width': 1000, 'height': 700}); pg = await ctx.new_page()
+    errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.route(re.compile(r'onemap\.gov\.sg|arcgisonline\.com|open-meteo'), lambda r: r.abort())
+    await pg.route(re.compile(r'/worker\.js$'), lambda r: r.fulfill(status=404, body='missing'))
+    await serve_network(pg)
+    await pg.goto(URL); await pg.wait_for_selector('#loading', state='hidden', timeout=60000)
+    r = results['C'] = {}
+    r['engine'] = await pg.evaluate("window.__jalan.engine")
+    await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.35707, 103.85017, 100); ed.addPoint(1.3540, 103.8520, 100); }")
+    r['km'] = round(await dist(pg) / 1000, 3); r['errors'] = errs
+    await b.close()
+
 CHECKS = [
     ('A', 'footpath_network', lambda v: v is bool(NET_FILE)),
     ('A', 'paths_select_enabled', lambda v: v is bool(NET_FILE)),
     ('A', 'profile', lambda v: v == 'roads'),
+    ('A', 'engine', lambda v: v == ENGINE),
+    ('A', 'network_file', lambda v: v == ('run-net-3' if (NET_FILE or '').endswith('.gz') else 'run-net-2' if NET_FILE else 'run-net-1')),
     ('A', 'profile_after_all', lambda v: v == ('all' if NET_FILE else None)),
     ('A', 'empty_on_first_visit', lambda v: v is True),
     ('A', 'example_km', lambda v: 3.0 < v < 4.0),
@@ -175,11 +202,14 @@ CHECKS = [
     ('B', 'climb', lambda v: v.replace('≈', '').replace('m', '').strip().isdigit() and int(v.replace('≈', '').replace('m', '')) < 10),
     ('B', 'layers_menu', lambda v: 'OpenStreetMap' not in v and 'Satellite (Esri)' in v),
     ('B', 'errors', lambda v: v == []),
+    ('C', 'engine', lambda v: v == 'inline'),
+    ('C', 'km', lambda v: 0.2 < v < 1.5),
+    ('C', 'errors', lambda v: v == []),
 ]
 
 async def main():
     async with async_playwright() as p:
-        await run_a(p); await run_b(p)
+        await run_a(p); await run_b(p); await run_c(p)
     print(json.dumps(results, indent=1, ensure_ascii=False))
     bad = [f'{g}.{k} = {results[g].get(k)!r}' for g, k, ok in CHECKS if not ok(results[g].get(k))]
     if results['A'].get('import_km') != results['A'].get('km_at_export'): bad.append(f"import_km {results['A'].get('import_km')} != km_at_export {results['A'].get('km_at_export')}")

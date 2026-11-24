@@ -1,6 +1,7 @@
 name: Build network
 
-# Builds data/net-v2.json (walk network with footpaths) from OpenStreetMap + NParks park connectors
+# Builds the walk network with footpaths from OpenStreetMap + NParks park connectors: data/net-v2.json (JSON)
+# and data/net-v3.bin.gz (the compact binary the app loads first; scripts/pack_network.py)
 # and publishes it, with build stats, to the data/network-v2 branch. Run by hand or monthly.
 on:
   workflow_dispatch:
@@ -10,6 +11,7 @@ on:
     paths:
       - scripts/build_network.py
       - scripts/check_network.py
+      - scripts/pack_network.py
       - .github/workflows/build-network.yml
 
 permissions:
@@ -68,6 +70,8 @@ jobs:
         run: |
           python scripts/build_network.py --osm sg.osm.pbf --pcn pcn.geojson --land land.geojson --out data/net-v2.json --stats data/stats.json
           python scripts/check_network.py data/net-v2.json
+          python scripts/pack_network.py data/net-v2.json data/net-v3.bin.gz
+          node tests/test_network_v2.js data/net-v3.bin.gz data/net-v2.json
           python -c "import json; s = json.load(open('data/stats.json')); s['clip'] = 'URA region boundaries (no sea) + 150 m'; s['osm_source'] = '$OSM_SOURCE'; json.dump(s, open('data/stats.json', 'w'), indent=1)"
           echo "::notice::$(python -c "import json; s = json.load(open('data/stats.json')); print({k: s.get(k) for k in ('edges', 'file_gzip_mb', 'outside_land_km_dropped', 'pcn_with_osm_way_within_12m_pct', 'pcn_marked_as_park_connector_pct', 'roads_mode_pcn_reachable_pct', 'components')})")"
 
@@ -76,12 +80,12 @@ jobs:
           if [ "$GITHUB_REF_NAME" = "main" ]; then TARGET=data/network-v2; else TARGET=data/network-v2-preview; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cp data/net-v2.json data/stats.json /tmp/
+          cp data/net-v2.json data/net-v3.bin.gz data/stats.json /tmp/
           mkdir -p /tmp/src && cp sg.osm.pbf pcn.geojson land.geojson /tmp/src/
           git checkout --orphan "$TARGET"
           git rm -rfq --cached . && rm -rf ./* .github .gitignore .nojekyll 2>/dev/null || true
-          mkdir -p data && cp /tmp/net-v2.json /tmp/stats.json data/
-          git add data/net-v2.json data/stats.json
+          mkdir -p data && cp /tmp/net-v2.json /tmp/net-v3.bin.gz /tmp/stats.json data/
+          git add data/net-v2.json data/net-v3.bin.gz data/stats.json
           if [ "$TARGET" != data/network-v2 ]; then   # previews also keep the inputs, to rerun the builder locally
             mkdir -p src && cp /tmp/src/* src/ && git add src
           fi

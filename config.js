@@ -20,9 +20,12 @@ window.RP_CONFIG = {
   elevationUrl: 'https://api.open-meteo.com/v1/elevation',
   // OneMap address search (no key needed)
   searchUrl: 'https://www.onemap.gov.sg/api/common/elastic/search',
-  // Walk network, tried in order. The first is rebuilt monthly from OpenStreetMap by .github/workflows/build-network.yml
-  // (streets, pavements, footpaths, park connectors); net.json is the older roads-and-park-connectors network kept as a fallback.
-  networkUrls: ['https://raw.githubusercontent.com/jardani1x/route/data/network-v2/data/net-v2.json', 'net.json'],
+  // Walk network, tried in order. The first two are rebuilt monthly from OpenStreetMap by
+  // .github/workflows/build-network.yml (streets, pavements, footpaths, park connectors): the compact binary
+  // (1.4 MB; needs a browser that can unpack .gz) and the same network as JSON (4.3 MB). net.json is the older
+  // roads-and-park-connectors network kept as a last resort.
+  networkUrls: ['https://raw.githubusercontent.com/jardani1x/route/data/network-v2/data/net-v3.bin.gz',
+    'https://raw.githubusercontent.com/jardani1x/route/data/network-v2/data/net-v2.json', 'net.json'],
   closuresUrl: 'closures.json',
   center: [1.3521, 103.8198],
   zoom: 12,
