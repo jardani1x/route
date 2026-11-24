@@ -129,4 +129,53 @@ const es = E.elevationSamples(outbound, 200); const nExp = Math.min(200, Math.fl
   ok(v1.eKind[1] === 3 && v1.eFlag[1] === RC.LINK && !v1.hasPaths && new E.Router(v1, 'all').profile === 'roads', 'v1 access paths read as links; v1 has no all-paths profile');
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED'); process.exit(fails ? 1 : 0);
+// 7) elevation store: grid cache, out-and-back reuse, polite retries on 429, error codes
+(async () => {
+  const mk = (responses) => {           // fake fetch: a queue of [status, body|null, headers]
+    const log = [];
+    const f = async (url) => {
+      const lat = decodeURIComponent(/latitude=([^&]+)/.exec(url)[1]).split(','); log.push(lat.length);
+      const [status, body, hdr] = responses.length ? responses.shift() : [200, null, {}];
+      if (status === 'throw') throw new TypeError('Failed to fetch');
+      return { status, ok: status >= 200 && status < 300, headers: { get: (k) => (hdr || {})[k.toLowerCase()] || null },
+        json: async () => body || { elevation: lat.map((_, i) => 10 + i % 3) } };
+    };
+    return { f, log };
+  };
+  const waits = [], wait = async (ms) => { waits.push(ms); };
+  const line = (n, from, to) => Array.from({ length: n }, (_, i) => [from[0] + (to[0] - from[0]) * i / (n - 1), from[1] + (to[1] - from[1]) * i / (n - 1)]);
+  const out = line(100, [1.3500, 103.8500], [1.3500, 103.8680]);         // ~2 km east, a sample every 20 m
+  const outBack = out.concat(out.slice().reverse());
+
+  let { f, log } = mk([]);
+  let st = new E.ElevationStore({ url: 'x', fetch: f, wait });
+  let v = await st.get(outBack);
+  const cells = new Set(outBack.map(p => st.key(p[0], p[1]))).size;
+  ok(v.length === 200 && st.points === cells && cells < 60, `out & back of 200 samples asks for ${st.points} grid points (one per ~44 m cell), not 200`);
+  await st.get(out);
+  ok(st.points === cells, 'asking again for the way out needs nothing new');
+  const longer = out.concat(line(25, [1.3500, 103.8680], [1.3545, 103.8680]));
+  const before = st.points; await st.get(longer);
+  ok(st.points - before <= 13, `extending by 0.5 km asks only for the new cells: ${st.points - before} points`);
+
+  ({ f, log } = mk([[429, null, {}], [200, null, {}]]));
+  st = new E.ElevationStore({ url: 'x', fetch: f, wait }); waits.length = 0; let busy = 0;
+  v = await st.get(out, () => busy++);
+  ok(v.length === 100 && busy === 1 && waits[0] === 2000 && st.requests === 2, `429 then OK: waited ${waits.join(', ')} ms, tried ${st.requests} times`);
+
+  ({ f, log } = mk([[429, null, { 'retry-after': '5' }], [200, null, {}]]));
+  st = new E.ElevationStore({ url: 'x', fetch: f, wait }); waits.length = 0;
+  await st.get(out); ok(waits[0] === 5000, 'Retry-After is honoured');
+
+  const code = async (responses) => { const m = mk(responses); const s2 = new E.ElevationStore({ url: 'x', fetch: m.f, wait }); try { await s2.get(out); return 'ok'; } catch (e) { return e.code; } };
+  ok(await code([[429], [429], [429]]) === 'busy', 'still 429 after two retries: busy');
+  ok(await code([['throw']]) === 'offline', 'no answer: offline');
+  ok(await code([[500]]) === 'http', 'server error: http');
+  ok(await code([[200, { elevation: [1, 2] }]]) === 'bad', 'wrong number of values: bad');
+
+  ({ f } = mk([])); st = new E.ElevationStore({ url: 'x', fetch: f, wait, max: 10 });
+  await st.get(out); const kept = st.dump();
+  const st2 = new E.ElevationStore({ url: 'x', fetch: f, wait }); st2.load(kept);
+  ok(st.cells.size === 10 && st2.cells.size === 10 && st2.cells.get(st.key(...out[99])) !== undefined, 'cache trims to its limit, keeps the latest, and survives dump/load');
+  console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED'); process.exit(fails ? 1 : 0);
+})();

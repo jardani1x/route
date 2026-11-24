@@ -113,6 +113,67 @@
     for (let i = 0; i < n; i++) { const d = L * i / (n - 1); pts.push(pointAt(cs, cum, d)); dists.push(d); }
     return { pts, dists };
   }
+  /** Elevation lookups with a cell cache and polite retries.
+   *  Open-Meteo counts each coordinate in a request roughly as one call against per-minute, per-hour and
+   *  per-day limits, so re-asking for a whole route on every edit soon gets "429 Too Many Requests".
+   *  Points are snapped to a grid of ELEV_GRID degrees (~44 m, half the 90 m cell of the Copernicus model
+   *  behind the API, so snapping hardly changes the answer) and each grid point is fetched once: an edit
+   *  asks only for the cells the route did not cover before, and an out-and-back asks for its way out only.
+   *  On 429 it waits (Retry-After, else 2 s, then 6 s) and tries again; then it gives up with err.code 'busy'.
+   *  Other failures: 'offline' (no answer), 'http' (an error status), 'bad' (an answer it cannot use). */
+  const ELEV_GRID = 0.0004;
+  class ElevationStore {
+    constructor({ url, fetch, wait, retries = [2000, 6000], max = 20000, grid = ELEV_GRID }) {
+      this.url = url; this.fetch = fetch; this.retries = retries; this.max = max; this.grid = grid;
+      this.wait = wait || ((ms) => new Promise((r) => setTimeout(r, ms)));
+      this.cells = new Map(); this.requests = 0; this.points = 0;
+    }
+    key(la, lo) { return Math.round(la / this.grid) + ',' + Math.round(lo / this.grid); }
+    _coord(k) { const [a, b] = k.split(',').map(Number); return [(a * this.grid).toFixed(5), (b * this.grid).toFixed(5)]; }
+    /** Elevations for pts ([lat, lon] pairs), in order. onBusy() is called before each wait after a 429.
+     *  Calls run one after another, so a second edit reuses what the first one fetched. */
+    get(pts, onBusy) {
+      const run = (this._q || Promise.resolve()).then(() => this._get(pts, onBusy));
+      this._q = run.catch(() => {});
+      return run;
+    }
+    async _get(pts, onBusy) {
+      const keys = pts.map((p) => this.key(p[0], p[1]));
+      const need = [...new Set(keys)].filter((k) => !this.cells.has(k));
+      for (let i = 0; i < need.length; i += 100) {
+        const chunk = need.slice(i, i + 100), vals = await this._ask(chunk, onBusy);
+        chunk.forEach((k, j) => this.cells.set(k, vals[j]));
+      }
+      for (const k of keys) { const v = this.cells.get(k); this.cells.delete(k); this.cells.set(k, v); }  // recently used last
+      while (this.cells.size > this.max) this.cells.delete(this.cells.keys().next().value);
+      return keys.map((k) => this.cells.get(k));
+    }
+    async _ask(chunk, onBusy) {
+      const cs = chunk.map((k) => this._coord(k));
+      const url = `${this.url}?latitude=${cs.map((c) => c[0]).join(',')}&longitude=${cs.map((c) => c[1]).join(',')}`;
+      for (let attempt = 0; ; attempt++) {
+        let r;
+        try { r = await this.fetch(url); } catch (e) { throw Object.assign(new Error('Open-Meteo could not be reached'), { code: 'offline' }); }
+        this.requests++;
+        if (r.status === 429) {
+          if (attempt >= this.retries.length) throw Object.assign(new Error('Open-Meteo is busy'), { code: 'busy' });
+          const after = Number(r.headers && r.headers.get && r.headers.get('retry-after'));
+          if (onBusy) onBusy();
+          await this.wait(after > 0 ? Math.min(after * 1000, 30000) : this.retries[attempt]);
+          continue;
+        }
+        if (!r.ok) throw Object.assign(new Error('Open-Meteo answered ' + r.status), { code: 'http' });
+        const j = await r.json();
+        if (!j || !Array.isArray(j.elevation) || j.elevation.length !== chunk.length || j.elevation.some((v) => typeof v !== 'number' || !isFinite(v)))
+          throw Object.assign(new Error('Open-Meteo sent an answer that could not be used'), { code: 'bad' });
+        this.points += chunk.length;
+        return j.elevation;
+      }
+    }
+    /** For localStorage: [[key, metres], ...], most recently used last. */
+    dump(limit = 8000) { return [...this.cells].slice(-limit); }
+    load(list) { if (Array.isArray(list)) for (const e of list) if (Array.isArray(e) && typeof e[0] === 'string' && isFinite(e[1])) this.cells.set(e[0], e[1]); }
+  }
   /** Apply fn to each sample's neighbourhood within ±windowM/2 along the route. */
   function windowed(d, h, windowM, fn) {
     const out = new Array(h.length); let lo = 0, hi = 0;
@@ -388,5 +449,5 @@
     return { coords: decode(o.p), wps: (o.w || []).map(([lat, lon, title]) => ({ lat, lon, title: String(title || 'Waypoint'), notes: '' })) };
   }
 
-  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, locateAll, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, smoothElevation, gainLoss };
+  return { Router, RouteEditor, geo: { D, dedupe, cumul, length, slice, locate, locateAll, resample, simplify, despur, pointAt, join }, encode, decode, toShare, fromShare, elevationSamples, smoothElevation, gainLoss, ElevationStore };
 });

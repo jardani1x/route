@@ -312,8 +312,20 @@
   }
 
   // ---------------- stats & elevation ----------------
-  let elev = null, elevTimer = 0, elevSeq = 0, elevState = 'idle';
-  const elevCache = new Map();
+  let elev = null, elevTimer = 0, elevSeq = 0, elevState = 'idle', elevSaveT = 0;
+  // elevation per ~44 m grid cell, kept between visits, so an edit only asks Open-Meteo about new ground
+  const elevStore = new RE.ElevationStore({
+    url: CFG.elevationUrl,
+    fetch: (url) => { const ctrl = new AbortController(), to = setTimeout(() => ctrl.abort(), 8000); return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(to)); },
+  });
+  elevStore.load(lsGet('elev', null));
+  const ELEV_MSG = {
+    loading: 'Loading elevation…',
+    busy: 'The elevation service is busy. Trying again…',
+    'busy-later': 'The elevation service is busy (too many requests). Trying again in 30 seconds.',
+    offline: 'Elevation needs Open-Meteo, which could not be reached. Check your connection.',
+    unavailable: 'Elevation is not available right now (Open-Meteo returned an error).',
+  };
   function renderStats() {
     const L0 = editor.distance;
     $('#statDist').innerHTML = `${fmtDist(L0)}<small>${unitLabel()}</small>`;
@@ -328,29 +340,18 @@
   }
   async function fetchElevation() {
     const seq = ++elevSeq, cs = editor.coords, { pts, dists } = RE.elevationSamples(cs, 200, 20);
-    const key = RE.encode(pts);
     try {
-      let vals = elevCache.get(key);
-      if (!vals) {
-        vals = [];
-        for (let i = 0; i < pts.length; i += 100) {
-          const chunk = pts.slice(i, i + 100);
-          const url = `${CFG.elevationUrl}?latitude=${chunk.map(p => p[0].toFixed(5)).join(',')}&longitude=${chunk.map(p => p[1].toFixed(5)).join(',')}`;
-          const ctrl = new AbortController(), to = setTimeout(() => ctrl.abort(), 8000);
-          const r = await fetch(url, { signal: ctrl.signal }); clearTimeout(to);
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          const j = await r.json(); if (!Array.isArray(j.elevation) || j.elevation.length !== chunk.length) throw new Error('bad elevation payload');
-          vals.push(...j.elevation);
-        }
-        elevCache.set(key, vals);
-      }
+      const vals = await elevStore.get(pts, () => { if (seq === elevSeq) { elevState = 'busy'; drawChart(); } });
+      clearTimeout(elevSaveT); elevSaveT = setTimeout(() => lsSet('elev', elevStore.dump(6000)), 1000);
       if (seq !== elevSeq) return;
       const smooth = RE.smoothElevation(dists, vals);
       elev = { d: dists, h: smooth, gl: RE.gainLoss(smooth, 3) }; elevState = 'ok';
       $('#statGain').innerHTML = `≈${Math.round(elev.gl.gain)}<small>m</small>`;
     } catch (err) {
       if (seq !== elevSeq) return;
-      elev = null; elevState = 'unavailable'; $('#statGain').textContent = '–';
+      elev = null; $('#statGain').textContent = '–';
+      elevState = err.code === 'busy' ? 'busy-later' : err.code === 'offline' ? 'offline' : 'unavailable';
+      if (err.code === 'busy') { clearTimeout(elevTimer); elevTimer = setTimeout(fetchElevation, 30000); }
     }
     drawChart();
   }
@@ -364,9 +365,7 @@
         msg.innerHTML = 'Tap the map to start a route, or press Draw and trace it. <button type="button" class="linkbtn" id="exampleBtn">Try an example</button>';
         msg.querySelector('#exampleBtn').addEventListener('click', loadExample); return;
       }
-      msg.textContent = editor && editor.coords.length >= 2
-        ? (elevState === 'loading' ? 'Loading elevation…' : 'Elevation is not available right now (it needs an internet connection to Open-Meteo).')
-        : 'Tap the map to start a route, or press Draw and trace it.';
+      msg.textContent = ELEV_MSG[elevState] || ELEV_MSG.unavailable;
       return;
     }
     msg.hidden = true;

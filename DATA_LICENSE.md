@@ -21,7 +21,8 @@ Services used at run time (not stored in this repository):
 |---|---|
 | OneMap basemap tiles | © OneMap / Singapore Land Authority, attribution required |
 | Esri World Imagery | © Esri, Maxar, Earthstar Geographics; Esri terms of use |
-| Open-Meteo elevation API | CC BY 4.0, free for non-commercial use |
+| Open-Meteo elevation API | CC BY 4.0, free for non-commercial use, rate-limited per minute, hour and day; the app caches what it fetches |
+| Copernicus DEM GLO-90 (behind the elevation API) | Free licence; attribution: produced using Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved |
 | OneMap address search | OneMap terms of use |
 
 The code is under the MIT licence (`LICENSE`); the bundled Leaflet files are under Leaflet's BSD 2-Clause licence (`LICENSE-LEAFLET`).
