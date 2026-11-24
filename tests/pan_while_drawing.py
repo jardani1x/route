@@ -7,7 +7,7 @@ URL = 'http://localhost:8766/index.html'
 R = {}
 
 async def state(pg):
-    return await pg.evaluate("() => { const J = window.__jalan, c = J.map.getCenter(); return {lat: c.lat, lng: c.lng, zoom: J.map.getZoom(), dist: J.editor.distance, tool: J.tool}; }")
+    return await pg.evaluate("async () => { const J = window.__jalan; await J.idle(); const c = J.map.getCenter(); return {lat: c.lat, lng: c.lng, zoom: J.map.getZoom(), dist: J.editor.distance, tool: J.tool}; }")
 
 def moved_px(a, b, zoom):   # approximate on-screen shift between two centres
     import math
@@ -47,12 +47,12 @@ async def desktop(p):
     if await pg.is_enabled('#clearBtn'): await pg.click('#clearBtn')
     if (await state(pg))['tool'] != 'draw': await pg.click('#toolDraw')
     s2 = await state(pg)
-    pts = await pg.evaluate("""() => { const J = window.__jalan, p = J.router.path([1.35142, 103.855], [1.3470, 103.8562]);
+    pts = await pg.evaluate("""async () => { const J = window.__jalan, p = await J.path([1.35142, 103.855], [1.3470, 103.8562]);
        return window.RouteEngine.geo.resample(p, 12).map(c => { const q = J.map.latLngToContainerPoint(c); return [q.x, q.y]; }); }""")
     await pg.mouse.move(*pts[0]); await pg.mouse.down()
     for x, y in pts[1:]: await pg.mouse.move(x, y, steps=2)
     await pg.mouse.up(); await pg.wait_for_timeout(400)
-    s3 = await state(pg); r['left_drag_added_m'] = round(s3['dist'] - s2['dist']); r['left_drag_expected_m'] = await pg.evaluate("() => Math.round(window.RouteEngine.geo.length(window.__jalan.router.path([1.35142, 103.855], [1.3470, 103.8562])))")
+    s3 = await state(pg); r['left_drag_added_m'] = round(s3['dist'] - s2['dist']); r['left_drag_expected_m'] = await pg.evaluate("async () => Math.round(window.RouteEngine.geo.length(await window.__jalan.path([1.35142, 103.855], [1.3470, 103.8562])))")
     r['errors'] = errs; await b.close()
 
 async def touch(p):
@@ -65,7 +65,7 @@ async def touch(p):
     await pg.tap('#toolDraw'); r = R['touch'] = {'hint': await pg.text_content('#banner')}
     s0 = await state(pg)
     # one finger draws
-    pts = await pg.evaluate("""() => { const J = window.__jalan, p = J.router.path([1.3510, 103.8550], [1.3485, 103.8557]);
+    pts = await pg.evaluate("""async () => { const J = window.__jalan, p = await J.path([1.3510, 103.8550], [1.3485, 103.8557]);
        return window.RouteEngine.geo.resample(p, 10).map(c => { const q = J.map.latLngToContainerPoint(c); return [q.x, q.y]; }); }""")
     await touch_ev('touchStart', [(0, pts[0])])
     for q in pts[1:]: await touch_ev('touchMove', [(0, q)])
@@ -86,7 +86,7 @@ async def touch(p):
     # a real stroke, then a second finger lands: the stroke is kept, then the map pans
     await pg.evaluate("() => window.__jalan.map.setView([1.3500, 103.8545], 16, {animate: false})"); await pg.wait_for_timeout(300)
     s4 = await state(pg)
-    pts = await pg.evaluate("""() => { const J = window.__jalan, p = J.router.path([1.3485, 103.8557], [1.3460, 103.8563]);
+    pts = await pg.evaluate("""async () => { const J = window.__jalan, p = await J.path([1.3485, 103.8557], [1.3460, 103.8563]);
        return window.RouteEngine.geo.resample(p, 10).map(c => { const q = J.map.latLngToContainerPoint(c); return [q.x, q.y]; }); }""")
     await touch_ev('touchStart', [(0, pts[0])])
     for q in pts[1:]: await touch_ev('touchMove', [(0, q)])
