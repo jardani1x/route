@@ -1,4 +1,4 @@
-/* RunCore — network loading, snapping, A* routing, route assembly, cue sheet, GPX + ZIP.
+/* RunCore — network loading (binary or JSON), snapping, A* routing, route assembly, cue sheet, GPX.
  * Pure logic, no DOM: runs in the browser (window.RunCore) and in Node (require) for testing. */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -51,17 +51,47 @@
   }
 
   // ---------- network ----------
+  // Built from "parts": flat typed arrays, so a network decoded in a Web Worker can be copied to the page
+  // with postMessage and used there as is. Three sources: run-net-3 binary (fromBinary), run-net-1/2
+  // JSON (fromText / an array of records), or parts from another thread (fromParts).
+  //   lat, lon      Float64 vertices, edge by edge (endpoints included); eStart[e]..eStart[e+1]-1 are e's
+  //   eKind, eFlag  Uint8 kind (0-6) and flags (LINK, ESTATE); eName Int32 index into names (-1 none)
+  //   eLen          Float64 metres; eU, eV Int32 end nodes; nLat, nLon Float64 node coordinates
+  //   adjStart, adj CSR adjacency (node -> edges); bbox Float64 [s,w,n,e] per edge
+  //   grid          dense CELL-degree grid over the network's extent: gridStart (cells+1), gridEdges
+  const PART_KEYS = ['lat', 'lon', 'eStart', 'eKind', 'eFlag', 'eName', 'eLen', 'eU', 'eV', 'nLat', 'nLon',
+    'adjStart', 'adj', 'bbox', 'gridStart', 'gridEdges'];
+
   class Network {
-    constructor(records) {
-      const meta = records[0];
-      this.names = meta.names; this.meta = meta;
-      const E = records.length - 1;
+    constructor(p) {
+      if (Array.isArray(p)) p = Network._partsFromRecords(p);
+      this.meta = p.meta; this.names = p.meta.names || []; this.hasPaths = !!p.hasPaths;
+      for (const k of PART_KEYS) if (p[k]) this[k] = p[k];
+      this.E = this.eKind.length; this.N = this.nLat.length;
+      this.grid0 = p.grid0;
+      if (!this.eLen) this._buildLengths();
+      if (!this.adjStart && !p.light) this._buildAdjacency();
+      if (!this.gridStart) this._buildGrid();
+      this._stamp = new Uint32Array(this.E); this._stampN = 0;
+      this.blocked = new Uint8Array(this.E);
+    }
+
+    static fromText(text) { return new Network(Network._partsFromRecords(JSON.parse(text))); }
+    static fromParts(p) { return new Network(p); }
+    /** The arrays another thread needs to rebuild this network without decoding it again (copied, not moved). */
+    toParts() {
+      const p = { meta: this.meta, hasPaths: this.hasPaths, grid0: this.grid0 };
+      for (const k of PART_KEYS) p[k] = this[k];
+      return p;
+    }
+
+    static _partsFromRecords(records) {
+      const meta = records[0], E = records.length - 1, v1 = meta.format !== 'run-net-2';
       let nv = 0; for (let i = 1; i <= E; i++) nv += (records[i].length - 2) / 2;
       const lat = new Float64Array(nv), lon = new Float64Array(nv);
       const eStart = new Int32Array(E + 1), eKind = new Uint8Array(E), eFlag = new Uint8Array(E), eName = new Int32Array(E);
-      const v1 = meta.format !== 'run-net-2';
-      const eLen = new Float64Array(E), eU = new Int32Array(E), eV = new Int32Array(E);
-      const nodeIdx = new Map(); const nLat = [], nLon = [];
+      const eU = new Int32Array(E), eV = new Int32Array(E);
+      const nodeIdx = new Map(), nLat = [], nLon = [];
       const nodeOf = (la, lo) => {
         const key = la * 1e9 + lo;     // E6 ints: unique and exact in a double for SG ranges
         let id = nodeIdx.get(key);
@@ -75,59 +105,113 @@
         eName[e] = r[1]; eStart[e] = p;
         let la = r[2], lo = r[3]; const la0 = la, lo0 = lo;
         lat[p] = la / 1e6; lon[p] = lo / 1e6; p++;
-        let len = 0;
-        for (let j = 4; j < r.length; j += 2) {
-          la += r[j]; lo += r[j + 1];
-          lat[p] = la / 1e6; lon[p] = lo / 1e6;
-          len += mDist(lat[p - 1], lon[p - 1], lat[p], lon[p]); p++;
-        }
-        eLen[e] = len; eU[e] = nodeOf(la0, lo0); eV[e] = nodeOf(la, lo);
+        for (let j = 4; j < r.length; j += 2) { la += r[j]; lo += r[j + 1]; lat[p] = la / 1e6; lon[p] = lo / 1e6; p++; }
+        eU[e] = nodeOf(la0, lo0); eV[e] = nodeOf(la, lo);
       }
       eStart[E] = p;
-      Object.assign(this, { lat, lon, eStart, eKind, eFlag, eName, eLen, eU, eV, E });
-      this.hasPaths = !v1;
-      this.N = nLat.length; this.nLat = Float64Array.from(nLat); this.nLon = Float64Array.from(nLon);
-      // CSR adjacency
-      const deg = new Int32Array(this.N + 1);
-      for (let e = 0; e < E; e++) { deg[eU[e] + 1]++; if (eV[e] !== eU[e]) deg[eV[e] + 1]++; }
-      for (let i = 0; i < this.N; i++) deg[i + 1] += deg[i];
-      const adj = new Int32Array(deg[this.N]); const fill = deg.slice(0, this.N);
-      for (let e = 0; e < E; e++) { adj[fill[eU[e]]++] = e; if (eV[e] !== eU[e]) adj[fill[eV[e]]++] = e; }
-      this.adjStart = deg; this.adj = adj;
-      // spatial grid of edges + bbox
-      this.bbox = new Float64Array(E * 4);
-      this.grid = new Map();
-      for (let e = 0; e < E; e++) {
-        let a = 90, b = 180, c = -90, d = -180;
-        for (let i = eStart[e]; i < eStart[e + 1]; i++) {
-          if (lat[i] < a) a = lat[i]; if (lat[i] > c) c = lat[i];
-          if (lon[i] < b) b = lon[i]; if (lon[i] > d) d = lon[i];
-        }
-        this.bbox.set([a, b, c, d], e * 4);
-        for (let gy = Math.floor(a / CELL); gy <= Math.floor(c / CELL); gy++)
-          for (let gx = Math.floor(b / CELL); gx <= Math.floor(d / CELL); gx++) {
-            const k = gy * 100000 + gx; let l = this.grid.get(k); if (!l) this.grid.set(k, l = []); l.push(e);
-          }
-      }
-      this._stamp = new Uint32Array(E); this._stampN = 0;
-      this.blocked = new Uint8Array(E);
+      return { meta, hasPaths: !v1, lat, lon, eStart, eKind, eFlag, eName, eU, eV, nLat: Float64Array.from(nLat), nLon: Float64Array.from(nLon) };
     }
 
-    static fromText(text) { return new Network(JSON.parse(text)); }
+    /** Decode a run-net-3 file (already un-gzipped). See scripts/pack_network.py for the layout. */
+    static fromBinary(bytes) {
+      const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      if (b[0] !== 82 || b[1] !== 78 || b[2] !== 84 || b[3] !== 51) throw new Error('Not a run-net-3 file');
+      let pos = 4;
+      const uv = () => { let x = 0, m = 1, c; do { c = b[pos++]; x += (c & 127) * m; m *= 128; } while (c & 128); return x; };
+      const metaLen = uv();
+      const meta = JSON.parse(new TextDecoder().decode(b.subarray(pos, pos + metaLen))); pos += metaLen;
+      const N = uv(), E = uv(), M = uv(), sc = meta.scale || 1e5;
+      const sec = {};
+      for (const name of ['nodes', 'du', 'dv', 'kind', 'name', 'cnt', 'geom']) { const len = uv(); sec[name] = pos; pos += len; }
+      if (pos !== b.length) throw new Error('Damaged network file');
+      // one cursor per section; varints inline for speed
+      const cur = Object.assign({}, sec);
+      const rd = (k) => { let p = cur[k], x = 0, m = 1, c; do { c = b[p++]; x += (c & 127) * m; m *= 128; } while (c & 128); cur[k] = p; return x; };
+      const zd = (k) => { const x = rd(k); return x % 2 ? -(x + 1) / 2 : x / 2; };
+      const nLat = new Float64Array(N), nLon = new Float64Array(N), nA = new Float64Array(N), nO = new Float64Array(N);
+      let la = 0, lo = 0;
+      for (let i = 0; i < N; i++) { la += zd('nodes'); lo += zd('nodes'); nA[i] = la; nO[i] = lo; nLat[i] = la / sc; nLon[i] = lo / sc; }
+      const nv = 2 * E + M;
+      const lat = new Float64Array(nv), lon = new Float64Array(nv);
+      const eStart = new Int32Array(E + 1), eKind = new Uint8Array(E), eFlag = new Uint8Array(E), eName = new Int32Array(E);
+      const eU = new Int32Array(E), eV = new Int32Array(E);
+      let p = 0, u = 0;
+      for (let e = 0; e < E; e++) {
+        u += rd('du'); const v = u + zd('dv'), kb = b[cur.kind++], n = rd('name') - 1, k = rd('cnt');
+        eU[e] = u; eV[e] = v; eKind[e] = kb & 15; eFlag[e] = kb & 0xf0; eName[e] = n; eStart[e] = p;
+        lat[p] = nLat[u]; lon[p] = nLon[u]; p++;
+        la = nA[u]; lo = nO[u];
+        for (let j = 0; j < k; j++) { la += zd('geom'); lo += zd('geom'); lat[p] = la / sc; lon[p] = lo / sc; p++; }
+        lat[p] = nLat[v]; lon[p] = nLon[v]; p++;
+      }
+      eStart[E] = p;
+      if (p !== nv || cur.geom !== pos) throw new Error('Damaged network file');
+      return new Network({ meta, hasPaths: true, lat, lon, eStart, eKind, eFlag, eName, eU, eV, nLat, nLon });
+    }
+
+    _buildLengths() {
+      const { lat, lon, eStart } = this, eLen = new Float64Array(this.E);
+      for (let e = 0; e < this.E; e++) {
+        let L = 0; for (let i = eStart[e]; i < eStart[e + 1] - 1; i++) L += mDist(lat[i], lon[i], lat[i + 1], lon[i + 1]);
+        eLen[e] = L;
+      }
+      this.eLen = eLen;
+    }
+    _buildAdjacency() {
+      const { eU, eV, E, N } = this, deg = new Int32Array(N + 1);
+      for (let e = 0; e < E; e++) { deg[eU[e] + 1]++; if (eV[e] !== eU[e]) deg[eV[e] + 1]++; }
+      for (let i = 0; i < N; i++) deg[i + 1] += deg[i];
+      const adj = new Int32Array(deg[N]), fill = deg.slice(0, N);
+      for (let e = 0; e < E; e++) { adj[fill[eU[e]]++] = e; if (eV[e] !== eU[e]) adj[fill[eV[e]]++] = e; }
+      this.adjStart = deg; this.adj = adj;
+    }
+    /** Edge bboxes and a dense grid of CELL-degree cells (counting sort, no per-cell arrays). */
+    _buildGrid() {
+      const { lat, lon, eStart, E } = this, bbox = new Float64Array(E * 4);
+      let gy0 = Infinity, gx0 = Infinity, gy1 = -Infinity, gx1 = -Infinity;
+      for (let e = 0; e < E; e++) {
+        let a = 90, w = 180, c = -90, d = -180;
+        for (let i = eStart[e]; i < eStart[e + 1]; i++) {
+          if (lat[i] < a) a = lat[i]; if (lat[i] > c) c = lat[i];
+          if (lon[i] < w) w = lon[i]; if (lon[i] > d) d = lon[i];
+        }
+        bbox[e * 4] = a; bbox[e * 4 + 1] = w; bbox[e * 4 + 2] = c; bbox[e * 4 + 3] = d;
+        gy0 = Math.min(gy0, Math.floor(a / CELL)); gy1 = Math.max(gy1, Math.floor(c / CELL));
+        gx0 = Math.min(gx0, Math.floor(w / CELL)); gx1 = Math.max(gx1, Math.floor(d / CELL));
+      }
+      if (!E) { gy0 = gx0 = 0; gy1 = gx1 = -1; }
+      const rows = gy1 - gy0 + 1, cols = gx1 - gx0 + 1, start = new Int32Array(rows * cols + 1);
+      const each = (fn) => {
+        for (let e = 0; e < E; e++) {
+          const ya = Math.floor(bbox[e * 4] / CELL) - gy0, yb = Math.floor(bbox[e * 4 + 2] / CELL) - gy0;
+          const xa = Math.floor(bbox[e * 4 + 1] / CELL) - gx0, xb = Math.floor(bbox[e * 4 + 3] / CELL) - gx0;
+          for (let y = ya; y <= yb; y++) for (let x = xa; x <= xb; x++) fn(y * cols + x, e);
+        }
+      };
+      each((c) => { start[c + 1]++; });
+      for (let c = 0; c < rows * cols; c++) start[c + 1] += start[c];
+      const edges = new Int32Array(start[rows * cols]), fill = start.slice(0, rows * cols);
+      each((c, e) => { edges[fill[c]++] = e; });
+      this.bbox = bbox; this.gridStart = start; this.gridEdges = edges; this.grid0 = [gy0, gx0, rows, cols];
+    }
 
     nameOf(e) { const n = this.eName[e]; return n >= 0 ? this.names[n] : null; }
     label(e) { return this.nameOf(e) || KIND_LABEL[this.eKind[e]]; }
 
     /** Edges whose bbox intersects [s,w,n,e]. */
     edgesIn(s, w, n, e) {
-      const out = []; const st = ++this._stampN;
-      for (let gy = Math.floor(s / CELL); gy <= Math.floor(n / CELL); gy++)
-        for (let gx = Math.floor(w / CELL); gx <= Math.floor(e / CELL); gx++) {
-          const l = this.grid.get(gy * 100000 + gx); if (!l) continue;
-          for (const id of l) {
+      const out = [], st = ++this._stampN, [gy0, gx0, rows, cols] = this.grid0;
+      const ya = Math.max(0, Math.floor(s / CELL) - gy0), yb = Math.min(rows - 1, Math.floor(n / CELL) - gy0);
+      const xa = Math.max(0, Math.floor(w / CELL) - gx0), xb = Math.min(cols - 1, Math.floor(e / CELL) - gx0);
+      const G = this.gridStart, GE = this.gridEdges, bb = this.bbox;
+      for (let y = ya; y <= yb; y++)
+        for (let x = xa; x <= xb; x++) {
+          const c = y * cols + x;
+          for (let i = G[c]; i < G[c + 1]; i++) {
+            const id = GE[i];
             if (this._stamp[id] === st) continue; this._stamp[id] = st;
             const b = id * 4;
-            if (this.bbox[b] <= n && this.bbox[b + 2] >= s && this.bbox[b + 1] <= e && this.bbox[b + 3] >= w) out.push(id);
+            if (bb[b] <= n && bb[b + 2] >= s && bb[b + 1] <= e && bb[b + 3] >= w) out.push(id);
           }
         }
       return out;
@@ -233,11 +317,13 @@
         if (v !== u || cv < cu) { if (cv < g[v]) { setG(v, cv, -3); heap.push(cv + h(v), v); } }
       }
       const tU = this.eU[B.edge], tV = this.eV[B.edge];
-      const closed = new Set();
+      const closed = this._closed || (this._closed = new Uint32Array(N));
+      let gen = this._gen = ((this._gen || 0) + 1) >>> 0;
+      if (!gen) { closed.fill(0); gen = this._gen = 1; }
       while (heap.size) {
         if (heap.peekKey() >= best) break;
         const n = heap.pop();
-        if (closed.has(n)) continue; closed.add(n);
+        if (closed[n] === gen) continue; closed[n] = gen;
         if (wB < Infinity) {
           if (n === tU && g[n] + B.t * wB < best) { best = g[n] + B.t * wB; bestEnd = 'U'; }
           if (n === tV && g[n] + (this.eLen[B.edge] - B.t) * wB < best) { best = g[n] + (this.eLen[B.edge] - B.t) * wB; bestEnd = 'V'; }

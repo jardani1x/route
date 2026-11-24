@@ -27,6 +27,17 @@ checks = [('edges, kinds and link flag', got == want),
           ('coverage measured', stats['pcn_with_osm_way_within_12m_pct'] == 100.0 and stats['pcn_marked_as_park_connector_pct'] == 100.0),
           ('school footpath dropped', stats['closed_land_km_dropped'] > 0 and stats['closed_areas'] == 1 and stats['estate_areas'] == 1),
           ('format tag', meta['format'] == 'run-net-2')]
+# pack to run-net-3 and read both files back with core.js
+subprocess.run([sys.executable, os.path.join(here, '..', 'scripts', 'pack_network.py'), os.path.join(out, 'net.json'), os.path.join(out, 'net.bin.gz')], check=True)
+js = r'''
+const fs = require('fs'), zlib = require('zlib'), RC = require(process.argv[1] + '/core.js');
+const a = RC.Network.fromText(fs.readFileSync(process.argv[2], 'utf8')), b = RC.Network.fromBinary(zlib.gunzipSync(fs.readFileSync(process.argv[3])));
+const sig = (n) => Array.from({ length: n.E }, (_, e) => `${n.eKind[e]}|${n.eFlag[e]}|${n.nameOf(e) || ''}|${Math.round(n.eLen[e])}`).sort().join(';');
+console.log(JSON.stringify({ same: a.E === b.E && a.N === b.N && sig(a) === sig(b), format: b.meta.format, E: b.E }));
+'''
+res = json.loads(subprocess.run(['node', '-e', js, os.path.join(here, '..'), os.path.join(out, 'net.json'), os.path.join(out, 'net.bin.gz')],
+                                check=True, capture_output=True, text=True).stdout)
+checks.append(('binary run-net-3 reads back the same network', res['same'] and res['format'] == 'run-net-3'))
 for name, ok in checks: print(('PASS ' if ok else 'FAIL ') + name)
 if not all(ok for _, ok in checks): print('got', got); print(json.dumps(stats)); sys.exit(1)
 print('ALL PASSED')
