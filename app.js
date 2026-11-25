@@ -610,8 +610,44 @@
   $('#avoidClosures').addEventListener('change', (e) => { S.avoidClosures = e.target.checked; if (backend) backend.settings({ avoidClosures: S.avoidClosures }); saveSettings(); renderStats(); });
 
   // ---------------- map controls ----------------
-  $('#zoomIn').addEventListener('click', () => map.zoomIn());
-  $('#zoomOut').addEventListener('click', () => map.zoomOut());
+  $('#zoomIn').addEventListener('click', () => (in3d ? view3d.zoomBy(1) : map.zoomIn()));
+  $('#zoomOut').addEventListener('click', () => (in3d ? view3d.zoomBy(-1) : map.zoomOut()));
+
+  // ---------------- 3D view ----------------
+  // a tilted, rotatable view of the route among the buildings (view only; editing stays on the flat map)
+  const isDark = () => { const t = document.documentElement.getAttribute('data-theme'); return t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches); };
+  const view3d = window.View3D({
+    container: $('#map3d'), lib: CFG.map3d.lib, styles: CFG.map3d.styles, attribution: CFG.map3d.attribution, isDark,
+    colors: () => ({ route: cssVar('--route'), casing: isDark() ? '#101513' : '#ffffff', start: '#1f9d55', end: '#111111', waypoint: cssVar('--accent'),
+      buildingLow: isDark() ? '#3b4642' : '#e6dfd4', buildingHigh: isDark() ? '#6c7b74' : '#b7ab99' }),
+    onError: (msg) => toast(msg, 7000),
+  });
+  let in3d = false, opening3d = false;
+  const routeData = () => ({ coords: editor ? editor.coords : [], wps: editor ? editor.wps.map(w => ({ lat: w.lat, lon: w.lon })) : [] });
+  async function set3d(on) {
+    if (on === in3d || opening3d) return;
+    const btn = $('#view3dBtn');
+    if (on) {
+      closePops(); closeDrawer(); if (tool !== 'pan') setTool(tool);
+      opening3d = true; const label = $('#busy').lastChild.textContent; $('#busy').lastChild.textContent = 'Loading the 3D map…'; $('#busy').hidden = false;
+      $('#map3d').hidden = false; document.body.classList.add('is3d');
+      try {
+        const c = map.getCenter();
+        await view3d.open({ center: [c.lat, c.lng], zoom: map.getZoom() }, routeData());
+        in3d = true; btn.setAttribute('aria-pressed', 'true'); btn.textContent = '2D'; btn.setAttribute('aria-label', 'Back to the flat map'); btn.title = 'Back to the flat map (3 or Esc)';
+        const touch = window.matchMedia('(pointer: coarse)').matches;
+        if (!view3d.failed) toast(`3D view: drag to move, ${touch ? 'two fingers' : 'right-drag'} to tilt and turn. Editing works on the flat map.`, 5000);
+      } catch (e) {
+        $('#map3d').hidden = true; document.body.classList.remove('is3d'); toast(e.message || 'The 3D view could not open', 6000);
+      } finally { opening3d = false; $('#busy').hidden = true; $('#busy').lastChild.textContent = label; }
+    } else {
+      const v = view3d.view();
+      in3d = false; $('#map3d').hidden = true; document.body.classList.remove('is3d');
+      btn.setAttribute('aria-pressed', 'false'); btn.textContent = '3D'; btn.setAttribute('aria-label', '3D view'); btn.title = '3D view: the buildings around your route (3)';
+      map.invalidateSize(); map.setView(v.center, Math.round(v.zoom), { animate: false });
+    }
+  }
+  $('#view3dBtn').addEventListener('click', () => set3d(!in3d));
   $('#layersBtn').addEventListener('click', () => { const p = $('#layersPop'); if (!p.hidden) { closePops(); return; } closePops(); renderLayersPop(); placePop(p, $('#layersBtn')); });
   $('#finishBtn').addEventListener('click', () => { if (!$('#finishPop').hidden) { closePops(); return; } if (editor.coords.length < 2) { toast('Draw a route first'); return; } closePops(); openFinish(null); });
   let meMk = null, meCircle = null;
@@ -654,17 +690,19 @@
     if (mod || e.altKey) return;
     if (e.key === ' ' && isDrawing()) { e.preventDefault(); if (document.activeElement && document.activeElement.tagName === 'BUTTON') document.activeElement.blur(); if (!e.repeat) setSpacePan(true); return; }
     if (e.key === 'Shift') { shiftAlone = true; return; }
+    if (in3d && (e.key === 'Enter' || /^[ek]$/i.test(e.key))) return;   // drawing tools are for the flat map
     if (e.key === 'Enter') { if (e.target.closest('button, a, summary')) return; e.preventDefault(); setTool('draw'); }
     else if (e.key.toLowerCase() === 'e') setTool('erase');
     else if (e.key.toLowerCase() === 'k') setTool('waypoint');
-    else if (e.key === 'Escape') { closePops(); closeDrawer(); if (tool !== 'pan') setTool(tool); }
-    else if (e.key === '+' || e.key === '=') map.zoomIn();
-    else if (e.key === '-' || e.key === '_') map.zoomOut();
+    else if (e.key === 'Escape') { closePops(); closeDrawer(); if (in3d) set3d(false); else if (tool !== 'pan') setTool(tool); }
+    else if (e.key === '3') set3d(!in3d);
+    else if (e.key === '+' || e.key === '=') (in3d ? view3d.zoomBy(1) : map.zoomIn());
+    else if (e.key === '-' || e.key === '_') (in3d ? view3d.zoomBy(-1) : map.zoomOut());
   });
   document.addEventListener('keyup', (e) => { if (e.key === ' ') { if (spacePan) e.preventDefault(); setSpacePan(false); } if (e.key === 'Shift' && shiftAlone && !typing(e.target) && editor) setSnap(!editor.snap); shiftAlone = false; });
 
   // theme changes repaint canvas tiles and the route colours
-  const repaint = () => { themeCache = null; offlineBase.redraw(); pcnOverlay.redraw(); if (editor) renderRoute(); };
+  const repaint = () => { themeCache = null; offlineBase.redraw(); pcnOverlay.redraw(); if (editor) renderRoute(); view3d.themeChanged(); };
   const mq = window.matchMedia('(prefers-color-scheme: dark)'); if (mq.addEventListener) mq.addEventListener('change', repaint);
   new MutationObserver(repaint).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   window.addEventListener('resize', () => { if (elevState === 'ok') drawChart(); });
@@ -772,7 +810,7 @@
     PX = res.parts.px; PY = res.parts.py; [PX0, PY0] = res.parts.pxy0;   // worked out in the worker
     await loadClosures();
     let draftT = 0;
-    editor.onChange(() => { renderRoute(); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', { poly: RE.encode(editor.coords), wps: editor.wps }), 400); });
+    editor.onChange(() => { renderRoute(); if (in3d) view3d.update(routeData()); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', { poly: RE.encode(editor.coords), wps: editor.wps }), 400); });
     buildNameIndex();
     offlineBase.redraw(); pcnOverlay.redraw();
     // open: shared link > last draft > example
@@ -789,7 +827,8 @@
   if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {  // automated tests only
     window.__jalan = { map, get editor() { return editor; }, get net() { return net; }, get engine() { return backend && backend.kind; },
       get profile() { return editor && editor.profile; }, idle: () => (editor ? editor.idle() : Promise.resolve()),
-      path: (a, b) => backend.path(a, b), get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; } };
+      path: (a, b) => backend.path(a, b), get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; },
+      get in3d() { return in3d; }, get map3d() { return view3d.map; } };
   }
   boot();
 })();

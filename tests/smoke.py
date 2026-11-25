@@ -123,12 +123,13 @@ async def run_a(p):
     r['share_open_km'] = round(await dist(pg2) / 1000, 3)
     # closures: drawn on the map; a route through one shows a warning when avoidance is off
     r['closure_segments_drawn'] = await pg.evaluate("document.querySelectorAll('.leaflet-overlay-pane path[stroke-dasharray=\"4 7\"]').length")
-    await pg.click('#menuBtn'); await pg.uncheck('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn')
+    await pg.click('#menuBtn'); await pg.uncheck('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn'); await ev(pg, "0")
     await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await ev(pg, "0"); await pg.wait_for_timeout(300)
     r['closure_warning'] = await pg.text_content('#closureWarn') if await pg.is_visible('#closureWarn') else ''
-    await pg.click('#menuBtn'); await pg.check('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn')
+    await pg.click('#menuBtn'); await pg.check('#avoidClosures'); await pg.click('#closeDrawer'); await pg.click('#clearBtn'); await ev(pg, "0")
     await pg.evaluate("() => { const ed = window.__jalan.editor; ed.addPoint(1.3366, 103.8640, 80); ed.addPoint(1.3245, 103.8673, 80); }"); await ev(pg, "0"); await pg.wait_for_timeout(300)
     r['closure_warning_when_avoiding'] = await pg.is_visible('#closureWarn')
+    r['closure_avoiding_route'] = await ev(pg, "[window.__jalan.editor.coords.length, Math.round(window.__jalan.editor.distance)]")   # for diagnosis
     # search (offline index)
     await pg.fill('#search', 'kallang park'); await pg.wait_for_timeout(300); r['search_first'] = (await pg.locator('#results button .t').all_text_contents())[:3]
     # reload keeps the draft

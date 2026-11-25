@@ -80,6 +80,18 @@ Not built yet (Footpath Elite or beyond Basic): cue sheets, turn-by-turn voice n
 tracking along the route, lists/folders, merge/duplicate/split routes, slope colouring,
 3D terrain, offline tile downloads, PDF printing, activity logging, watch sync.
 
+## 3D view
+
+The **3D** button (or the 3 key) tilts the map to show the buildings around your route as 3D blocks.
+Drag to move; right-drag (or two fingers on a phone) to tilt and turn; the compass in the corner faces
+north again. It is a view only: drawing and editing stay on the flat map, and **2D** (or Esc) goes back
+to the same place.
+
+It uses MapLibre GL JS (`vendor/maplibre/`, loaded the first time you open the view) and OpenFreeMap's
+free vector tiles. Building heights come from OpenStreetMap: about three in four homes in Singapore are
+tagged with a height or number of storeys; a building without either is drawn low. Needs WebGL and an
+internet connection; without them the button says why and the flat map stays.
+
 ## How the page stays responsive
 
 The route engine (network, routing, snapping a drawn line, the editor and its undo history) runs in a
@@ -108,6 +120,8 @@ Measured in Chrome with its CPU slowed down 4x on a desktop (not a real phone), 
 | `app.js` | UI: map, tools, pointer input, stats, search, storage, import/export; talks to the engine by messages |
 | `worker.js`, `backend.js` | The route engine's home: loads the network, runs the editor, answers edits |
 | `engine.js` | Route editing: trace matching, eraser, replace, finish actions, undo/redo, share codec |
+| `view3d.js` | The 3D view (MapLibre GL JS + OpenFreeMap) |
+| `vendor/maplibre/` | MapLibre GL JS 5.24.1 (BSD 3-Clause, `LICENSE.txt`), loaded on first use of the 3D view |
 | `core.js` | Network loading (binary run-net-3, JSON run-net-1/2), spatial grid, snapping, A* routing with the two profiles, GPX helpers |
 | `config.js` | Tile, elevation and search endpoints (edit when self-hosting) |
 | `closures.json` | Known closures with dates and approximate extents |
@@ -137,13 +151,14 @@ Measured in Chrome with its CPU slowed down 4x on a desktop (not a real phone), 
 ## Data and licences
 
 Code: MIT (`LICENSE`). `leaflet.js` and `leaflet.css` are Leaflet 1.9.4 under its BSD 2-Clause
-licence (`LICENSE-LEAFLET`). Data: see `DATA_LICENSE.md`. Both networks are Derived Databases of OpenStreetMap under the ODbL 1.0.
+licence (`LICENSE-LEAFLET`); `vendor/maplibre/` is MapLibre GL JS 5.24.1 under its BSD 3-Clause licence. Data: see `DATA_LICENSE.md`. Both networks are Derived Databases of OpenStreetMap under the ODbL 1.0.
 
 - Streets and paths: © OpenStreetMap contributors, ODbL.
 - Park connectors: NParks, Singapore Open Data Licence (via data.gov.sg).
 - Land boundary: URA Master Plan 2019 Region Boundary (No Sea), Singapore Open Data Licence (via data.gov.sg).
 - Basemaps: OneMap © Singapore Land Authority; © OpenStreetMap; imagery © Esri.
 - Elevation: Copernicus DEM GLO-90 via Open-Meteo (CC BY 4.0).
+- 3D view: OpenFreeMap © OpenMapTiles, data from OpenStreetMap.
 
 ## Tests
 

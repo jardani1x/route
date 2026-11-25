@@ -24,5 +24,6 @@ Services used at run time (not stored in this repository):
 | Open-Meteo elevation API | CC BY 4.0, free for non-commercial use, rate-limited per minute, hour and day; the app caches what it fetches |
 | Copernicus DEM GLO-90 (behind the elevation API) | Free licence; attribution: produced using Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved |
 | OneMap address search | OneMap terms of use |
+| OpenFreeMap vector tiles (3D view) | Free public instance, no key; attribution "OpenFreeMap © OpenMapTiles Data from OpenStreetMap"; offered as-is and may change |
 
-The code is under the MIT licence (`LICENSE`); the bundled Leaflet files are under Leaflet's BSD 2-Clause licence (`LICENSE-LEAFLET`).
+The code is under the MIT licence (`LICENSE`); the bundled Leaflet files are under Leaflet's BSD 2-Clause licence (`LICENSE-LEAFLET`), and MapLibre GL JS in `vendor/maplibre/` under its BSD 3-Clause licence (`vendor/maplibre/LICENSE.txt`).
