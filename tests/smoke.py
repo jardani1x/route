@@ -51,6 +51,8 @@ async def run_a(p):
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(f'pageerror: {e}'))
     pg.on('console', lambda m: errs.append(f'console.{m.type}: {m.text}') if m.type == 'error' and 'Failed to load resource' not in m.text else None)
+    # map tiles and Open-Meteo unreachable, the same in CI (which has internet) as offline
+    await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com|api\.open-meteo\.com'), lambda r: r.abort())
     await serve_network(pg)
     await pg.goto(URL + URL_Q); await pg.wait_for_selector('#loading', state='hidden', timeout=30000); await pg.wait_for_timeout(2500)
     r = results['A'] = {}
@@ -101,7 +103,8 @@ async def run_a(p):
     await pg.click('#toolWaypoint'); box = await pg.locator('#map').bounding_box(); await pg.mouse.click(box['x'] + 700, box['y'] + 300)
     await pg.fill('#wpName', 'Water point'); await pg.click('#wpForm button[type=submit]'); r['waypoints'] = await ev(pg, "window.__jalan.editor.wps.map(w => w.title)")
     await pg.keyboard.press('k')
-    r['elevation_msg'] = await pg.text_content('#chartMsg')
+    await pg.wait_for_function("!document.querySelector('#chartMsg').textContent.includes('Loading')", timeout=15000)
+    r['elevation_msg'] = await pg.text_content('#chartMsg')   # Open-Meteo is blocked in this run
     # save + list
     await pg.click('#menuBtn'); await pg.click('#saveBtn'); await pg.fill('#saveName', 'Test loop'); await pg.click('#saveForm button[type=submit]'); await pg.wait_for_timeout(300)
     r['saved_list'] = await pg.locator('#savedList .item .t').all_text_contents()
@@ -140,17 +143,32 @@ async def run_b(p):
     ctx = await b.new_context(viewport={'width': 1000, 'height': 700})
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))
-    hits = {'tiles': 0, 'elev': 0}
+    hits = {'tiles': 0, 'elev': 0, 'elev_points': 0, 'e429': 0}
     async def tile(route): hits['tiles'] += 1; await route.fulfill(status=200, body=PNG, headers={'content-type': 'image/png', 'access-control-allow-origin': '*'})
     async def elev(route):
+        # the first request is refused as Open-Meteo does when its rate limit is hit; the app must wait and retry
         hits['elev'] += 1; q = route.request.url; n = len(re.search(r'latitude=([^&]+)', q).group(1).split('%2C' if '%2C' in q else ','))
-        await route.fulfill(status=200, body=json.dumps({'elevation': [8 + (14 if i % 25 < 4 else 0) for i in range(n)]}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
+        if hits['elev'] == 1:
+            hits['e429'] += 1
+            await route.fulfill(status=429, body='{"error":true,"reason":"Minutely API request limit exceeded. Please try again in one minute."}', headers={'content-type': 'application/json', 'access-control-allow-origin': '*'}); return
+        hits['elev_points'] += n
+        # flat ground at 8 m with a 14 m 'roof' on every 25th grid point (one ~44 m cell): smoothing must remove them
+        await route.fulfill(status=200, body=json.dumps({'elevation': [8 + (14 if i % 25 == 0 else 0) for i in range(n)]}), headers={'content-type': 'application/json', 'access-control-allow-origin': '*'})
     await pg.route(re.compile(r'onemap\.gov\.sg/maps/tiles|arcgisonline\.com'), tile)
     await pg.route(re.compile(r'api\.open-meteo\.com'), elev)
     await serve_network(pg)
     await pg.goto(URL + URL_Q); await pg.wait_for_selector('#loading', state='hidden', timeout=30000)
-    await pg.click('#exampleBtn'); await pg.wait_for_timeout(3000)
+    await pg.click('#exampleBtn')
     r = results['B'] = {}
+    try:
+        await pg.wait_for_function("document.querySelector('#chartMsg').textContent.includes('busy')", timeout=5000); r['busy_note'] = True
+    except Exception: r['busy_note'] = False
+    await pg.wait_for_function("/\\d/.test(document.querySelector('#statGain').textContent)", timeout=15000)
+    r['elevation_429s'] = hits['e429']; r['elevation_points'] = hits['elev_points']
+    r['route_samples'] = await pg.evaluate("window.RouteEngine.elevationSamples(window.__jalan.editor.coords, 200, 20).pts.length")
+    # undo (one way) and redo (out & back again): every cell is cached, so nothing more is asked
+    await pg.click('#undoBtn'); await pg.wait_for_timeout(1500); await pg.click('#redoBtn'); await pg.wait_for_timeout(1500)
+    r['elevation_points_after_undo_redo'] = hits['elev_points'] - r['elevation_points']
     r['tiles_served'] = hits['tiles']; r['fallback'] = await pg.evaluate("window.__jalan.tilesBlocked")
     r['elevation_requests'] = hits['elev']; r['climb'] = await pg.text_content('#statGain'); r['chart_drawn'] = await pg.locator('#chart svg').count()
     await pg.click('#layersBtn'); r['layers_menu'] = await pg.locator('#layersPop button').all_text_contents()
@@ -176,6 +194,7 @@ CHECKS = [
     ('A', 'footpath_network', lambda v: v is bool(NET_FILE)),
     ('A', 'paths_select_enabled', lambda v: v is bool(NET_FILE)),
     ('A', 'profile', lambda v: v == 'roads'),
+    ('A', 'elevation_msg', lambda v: 'could not be reached' in v),
     ('A', 'engine', lambda v: v == ENGINE),
     ('A', 'network_file', lambda v: v == ('run-net-3' if (NET_FILE or '').endswith('.gz') else 'run-net-2' if NET_FILE else 'run-net-1')),
     ('A', 'profile_after_all', lambda v: v == ('all' if NET_FILE else None)),
@@ -199,6 +218,10 @@ CHECKS = [
     ('B', 'fallback', lambda v: v is False),
     ('B', 'tiles_served', lambda v: v > 0),
     ('B', 'chart_drawn', lambda v: v == 1),
+    ('B', 'elevation_429s', lambda v: v == 1),
+    ('B', 'busy_note', lambda v: v is True),
+    ('B', 'elevation_points', lambda v: v < results['B']['route_samples'] * 0.6),
+    ('B', 'elevation_points_after_undo_redo', lambda v: v <= max(3, 0.15 * results['B']['elevation_points'])),
     ('B', 'climb', lambda v: v.replace('≈', '').replace('m', '').strip().isdigit() and int(v.replace('≈', '').replace('m', '')) < 10),
     ('B', 'layers_menu', lambda v: 'OpenStreetMap' not in v and 'Satellite (Esri)' in v),
     ('B', 'errors', lambda v: v == []),

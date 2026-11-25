@@ -61,7 +61,7 @@ have an OSM way within 12 m and 89.8% are marked as park connectors.
 | Move the map while drawing | Right-drag (or middle-drag), or hold Space and drag; two fingers to pan and pinch on touch screens (one finger keeps drawing) |
 | Finish route | Out & back, close loop, reverse, trim to a distance |
 | Measure distance | km or miles, distance markers, time from your pace per activity |
-| Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m surface model), smoothed over ~270 m so roofs and trees are not counted as climb; hover the chart to see the spot on the map |
+| Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m surface model), smoothed over ~270 m so roofs and trees are not counted as climb; hover the chart to see the spot on the map. Fetched once per ~44 m grid cell and kept between visits, so an edit only asks about new ground; if Open-Meteo says it is busy (HTTP 429), the app waits and retries, then tries again after 30 s |
 | Route waypoints | Waypoint tool (K): name + notes, draggable, exported to GPX |
 | Save routes / sync | Saved in this browser (localStorage); sync across devices is planned |
 | Share routes | "Copy share link" encodes the route in the URL |
@@ -143,7 +143,7 @@ licence (`LICENSE-LEAFLET`). Data: see `DATA_LICENSE.md`. Both networks are Deri
 - Park connectors: NParks, Singapore Open Data Licence (via data.gov.sg).
 - Land boundary: URA Master Plan 2019 Region Boundary (No Sea), Singapore Open Data Licence (via data.gov.sg).
 - Basemaps: OneMap © Singapore Land Authority; © OpenStreetMap; imagery © Esri.
-- Elevation: Open-Meteo (CC BY 4.0).
+- Elevation: Copernicus DEM GLO-90 via Open-Meteo (CC BY 4.0).
 
 ## Tests
 
