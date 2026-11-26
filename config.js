@@ -29,4 +29,11 @@ window.RP_CONFIG = {
   closuresUrl: 'closures.json',
   center: [1.3521, 103.8198],
   zoom: 12,
+  // 3D view (MapLibre GL JS, loaded on first use from vendor/maplibre): OpenFreeMap vector tiles, free and
+  // keyless, with OpenStreetMap building heights. Offered as-is by OpenFreeMap and may change.
+  map3d: {
+    lib: 'vendor/maplibre/',
+    styles: { light: 'https://tiles.openfreemap.org/styles/liberty', dark: 'https://tiles.openfreemap.org/styles/dark' },
+    attribution: '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+  },
 };

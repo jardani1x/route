@@ -51,7 +51,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [hidden] { display: none !important; }
-#map { position: absolute; inset: 0; background: var(--bg); }
+#map { position: absolute; inset: 0; z-index: 0; background: var(--bg); }   /* own stacking context, so the 3D view can sit on top */
+#map3d { position: absolute; inset: 0; z-index: 1; background: var(--bg); }
+#map3d[hidden] { display: none; }
+.is3d .tools, .is3d .history, .is3d .searchcard, .is3d #locateBtn, .is3d #layersBtn, .is3d .banner { display: none !important; }
+.roundbtn.label { font: 700 14px var(--font-display); letter-spacing: .02em; }
+.roundbtn[aria-pressed="true"] { background: var(--accent); color: #fff; }
+#map3d .maplibregl-ctrl-top-left { top: env(safe-area-inset-top); }
+#map3d .maplibregl-ctrl-top-right { top: calc(env(safe-area-inset-top) + 62px); }   /* below the menu button */
+#map3d .maplibregl-ctrl-group { border-radius: 12px; box-shadow: var(--shadow); }
 #map.tool-draw, #map.tool-draw .leaflet-interactive { cursor: crosshair; }
 #map.tool-erase, #map.tool-erase .leaflet-interactive { cursor: cell; }
 #map.tool-waypoint { cursor: copy; }
@@ -200,6 +208,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
 </head>
 <body>
 <div id="map" role="application" aria-label="Route map"></div>
+<div id="map3d" role="img" aria-label="3D view of the route and the buildings around it" hidden></div>
 
 <div class="float card searchcard" id="searchCard">
   <div class="searchrow">
@@ -257,6 +266,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
 <div class="banner" id="banner" hidden></div>
 
 <div class="float mapctl">
+  <button type="button" class="roundbtn label" id="view3dBtn" aria-pressed="false" aria-label="3D view" title="3D view: the buildings around your route (3)">3D</button>
   <div class="card zoomgroup"><button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in (+)">+</button><button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out (−)">−</button></div>
   <button type="button" class="roundbtn" id="locateBtn" aria-label="Show my location" title="Show my location"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m3 11 18-8-8 18-2-8z"/></svg></button>
   <button type="button" class="roundbtn" id="layersBtn" aria-label="Map layers" title="Map layers" aria-haspopup="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg></button>
@@ -330,6 +340,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
 <script src="core.js"></script>
 <script src="engine.js"></script>
 <script src="backend.js"></script>
+<script src="view3d.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

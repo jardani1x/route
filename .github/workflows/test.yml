@@ -61,5 +61,8 @@ jobs:
             NET_FILE=/tmp/net-v3.bin.gz ENGINE=inline python tests/smoke.py   # fallback: engine in the page
           fi
 
+      - name: Browser tests (3D view; WebGL through SwiftShader, OpenFreeMap replaced by a test tile)
+        run: python tests/view3d.py
+
       - name: Browser tests (moving the map while drawing, desktop + touch)
         run: python tests/pan_while_drawing.py
