@@ -109,12 +109,47 @@ button { cursor: pointer; }
 .stat .v small { font-size: 15px; color: var(--muted); margin-left: 2px; }
 .stat .l { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
 .stat.small .v { font-size: 20px; }
+.startbtn { border: 0; background: var(--accent); color: #fff; border-radius: 999px; padding: 7px 16px; font-weight: 700; }
+.startbtn:disabled { opacity: .45; }
+/* navigation: the panels take over, editing controls step aside */
+.nav .tools, .nav .history, .nav .searchcard, .nav #stats, .nav #view3dBtn, .nav .banner, .nav #locateBtn, .nav #menuBtn { display: none !important; }
+.nav .toast { top: auto; bottom: calc(env(safe-area-inset-bottom) + 140px); }
+.navtop { top: calc(env(safe-area-inset-top) + 12px); left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 96px)); padding: 12px 16px; }
+.navrow { display: flex; align-items: center; gap: 14px; }
+.navicon { width: 56px; height: 56px; flex: none; color: var(--accent); }
+.navicon svg { width: 100%; height: 100%; }
+.navdist { font: 800 32px/1 var(--font-display); letter-spacing: -.01em; }
+.navtext { font-size: 16px; font-weight: 600; margin-top: 4px; }
+.navthen { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.navthen:empty { display: none; }
+.navwarn { margin: 8px 0 0; padding: 6px 10px; border-radius: 8px; background: #f6d75c; color: #3b2f00; font-size: 14px; font-weight: 600; }
+.navbottom { left: 12px; right: 80px; bottom: calc(env(safe-area-inset-bottom) + 14px); max-width: 640px; margin: 0 auto; padding: 10px 14px; display: grid; gap: 8px; }
+.navstats { display: flex; gap: 22px; }
+.navstats b { display: block; font: 700 22px/1.1 var(--font-display); }
+.navstats span { font-size: 12px; color: var(--muted); }
+.navbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+.navbtn { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 7px 14px; font-weight: 600; }
+.navbtn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.navbtn.stop { margin-left: auto; background: #c0392b; border-color: #c0392b; color: #fff; }
+.navbtn[hidden] { display: none; }
+@media (max-width: 720px) {
+  .navtop { width: auto; left: 12px; right: 12px; transform: none; }   /* the menu steps aside while following */
+  .navbottom { right: 12px; padding: 8px 12px; bottom: calc(env(safe-area-inset-bottom) + 32px); }
+  .navdist { font-size: 28px; }
+  .navstats { gap: 18px; } .navstats b { font-size: 20px; }
+  .navbtn { padding: 7px 12px; }
+  /* pinch to zoom; the layers button sits above the panel so OpenStreetMap stays one tap away */
+  .nav .zoomgroup { display: none !important; }
+  .nav .mapctl { bottom: calc(env(safe-area-inset-bottom) + 146px); }
+  .nav .toast { bottom: calc(env(safe-area-inset-bottom) + 202px); }
+}
 .finishbtn { margin-left: auto; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 14px; font-weight: 600; }
 .chart { position: relative; height: 70px; }
 .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
 .chart .msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12.5px; color: var(--muted); text-align: center; padding: 0 10px; }
 .chart .tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--ink); color: var(--card); font-size: 12px; padding: 3px 7px; border-radius: 6px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; }
 .hintline { font-size: 13px; color: var(--muted); }
+.finishline { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 .warnline { margin: 0; font-size: 13px; font-weight: 600; color: var(--danger); }
 .linkbtn { border: 0; background: none; padding: 0; color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .chart .msg { pointer-events: auto; }
@@ -193,17 +228,20 @@ dialog textarea { min-height: 70px; resize: vertical; }
 .mk.hover { width: 14px; height: 14px; background: var(--route); border-width: 2px; }
 
 @media (max-width: 720px) {
-  .stats { left: 12px; right: 12px; width: auto; transform: none; bottom: calc(env(safe-area-inset-bottom) + 66px); padding: 8px 12px 6px; }
+  /* the bottom row sits above the map credits (two lines on a phone with OneMap): they must stay readable */
+  .stats { left: 12px; right: 12px; width: auto; transform: none; bottom: calc(env(safe-area-inset-bottom) + 86px); padding: 8px 12px 6px; }
   .stat .v { font-size: 26px; }
   .chart { height: 54px; }
-  .history { bottom: calc(env(safe-area-inset-bottom) + 12px); }
-  .mapctl { bottom: calc(env(safe-area-inset-bottom) + 12px); grid-auto-flow: column; }
+  .history { bottom: calc(env(safe-area-inset-bottom) + 32px); }
+  .mapctl { bottom: calc(env(safe-area-inset-bottom) + 32px); grid-auto-flow: column; }
   .zoomgroup { grid-auto-flow: column; }
   .zoomgroup button + button { border-top: 0; border-left: 1px solid var(--line); }
   .banner { display: none; }
   .tools { top: calc(env(safe-area-inset-top) + 118px); }
   .busy { top: calc(env(safe-area-inset-top) + 118px); }   /* below the search card, beside the tools */
 }
+/* phones: pinch (or the wheel) zooms; without the +/- buttons the 3D, location and layers buttons fit beside undo/redo/clear */
+@media (max-width: 480px) { .zoomgroup { display: none !important; } }
 </style>
 </head>
 <body>
@@ -253,9 +291,34 @@ dialog textarea { min-height: 70px; resize: vertical; }
     <div class="stat small"><span class="v" id="statTime">0:00</span><span class="l" id="statTimeLabel">Running time</span></div>
     <div class="stat small"><span class="v" id="statGain">–</span><span class="l">Climb (approx.)</span></div>
     <button type="button" class="finishbtn" id="finishBtn" aria-haspopup="menu">Finish route</button>
+    <button type="button" class="startbtn" id="startBtn" title="Follow this route with turn-by-turn directions" disabled>Start</button>
   </div>
+  <p class="finishline" id="finishLine" hidden><span id="finishText"></span> <button type="button" class="linkbtn" id="finishOff">Take it off</button></p>
   <p class="warnline" id="closureWarn" role="alert" hidden></p>
   <div class="chart" id="chart" aria-label="Elevation profile"><div class="msg" id="chartMsg">Tap the map to start a route, or press Draw and trace it.</div></div>
+</section>
+
+<!-- turn-by-turn, while following a route -->
+<section class="float card navtop" id="navTop" aria-label="Next turn" hidden>
+  <div class="navrow">
+    <div class="navicon" id="navIcon" aria-hidden="true"></div>
+    <div class="navmain"><div class="navdist" id="navDist">–</div><div class="navtext" id="navText" aria-live="polite">Waiting for your location…</div></div>
+  </div>
+  <p class="navthen" id="navThen"></p>
+  <p class="navwarn" id="navWarn" role="alert" hidden></p>
+</section>
+<section class="float card navbottom" id="navBottom" aria-label="Run progress" hidden>
+  <div class="navstats">
+    <div><b id="navDone">0.00</b><span id="navDoneL">km done</span></div>
+    <div><b id="navLeft">0.00</b><span id="navLeftL">km to go</span></div>
+    <div><b id="navTime">0:00</b><span>time</span></div>
+  </div>
+  <div class="navbtns">
+    <button type="button" class="navbtn" id="navRecenter" title="Follow my position again" hidden>Re-centre</button>
+    <button type="button" class="navbtn" id="navVoice" aria-pressed="false" title="Speak the turns">Voice off</button>
+    <button type="button" class="navbtn" id="navSim" aria-pressed="false" title="Try it without going out: a runner moves along the route at 8 times your pace">Simulate</button>
+    <button type="button" class="navbtn stop" id="navStop">Stop</button>
+  </div>
 </section>
 
 <div class="float topright">
@@ -307,7 +370,7 @@ dialog textarea { min-height: 70px; resize: vertical; }
     <h3>How it works</h3>
     <p class="small">Tap the map to start, then tap again to route to each next point. Press <b>Draw</b> and trace with your finger or mouse to pick exact roads; the line snaps to streets, footpaths and park connectors (see <b>Route along</b> above). Trace over part of a route to replace it. The eraser removes what you rub out and joins the gap another way. Turn <b>Snap</b> off to draw straight lines anywhere. While drawing, move the map with a right-drag, by holding Space and dragging, or with two fingers on a phone.</p>
     <p class="small" id="networkNote">Routing uses OpenStreetMap streets, pavements and footpaths (expressways left out) and NParks park connectors. Elevation comes from a 90 m surface model (it includes roofs and trees), smoothed over about 270 m, so treat the climb as a guide.</p>
-    <p class="small">Routing data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL); park connectors © NParks via data.gov.sg (Singapore Open Data Licence); basemap © OneMap / Singapore Land Authority; elevation from the Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA) via <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0). <a href="https://github.com/jardani1x/route" target="_blank" rel="noopener">Source and data licence</a>.</p>
+    <p class="small">Routing data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a> (ODbL); park connectors © NParks via data.gov.sg (Singapore Open Data Licence); basemaps © OneMap / Singapore Land Authority and © OpenStreetMap contributors; elevation from the Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA) via <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0). <a href="https://github.com/jardani1x/route" target="_blank" rel="noopener">Source and data licence</a>.</p>
   </section>
 </aside>
 

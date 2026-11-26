@@ -224,7 +224,7 @@ CHECKS = [
     ('B', 'elevation_points', lambda v: v < results['B']['route_samples'] * 0.6),
     ('B', 'elevation_points_after_undo_redo', lambda v: v <= max(3, 0.15 * results['B']['elevation_points'])),
     ('B', 'climb', lambda v: v.replace('≈', '').replace('m', '').strip().isdigit() and int(v.replace('≈', '').replace('m', '')) < 10),
-    ('B', 'layers_menu', lambda v: 'OpenStreetMap' not in v and 'Satellite (Esri)' in v),
+    ('B', 'layers_menu', lambda v: 'OpenStreetMap' in v and 'Satellite (Esri)' in v),
     ('B', 'errors', lambda v: v == []),
     ('C', 'engine', lambda v: v == 'inline'),
     ('C', 'km', lambda v: 0.2 < v < 1.5),

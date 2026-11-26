@@ -9,6 +9,14 @@ window.RP_CONFIG = {
       minZoom: 11, maxZoom: 19,
       attribution: '<a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener">OneMap</a> © contributors | <a href="https://www.sla.gov.sg/" target="_blank" rel="noopener">Singapore Land Authority</a>',
     },
+    osm: {
+      // OpenStreetMap's own tiles: free for light use with attribution and a Referer header (policy:
+      // https://operations.osmfoundation.org/policies/tiles/); heavy use needs their permission
+      label: 'OpenStreetMap',
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      minZoom: 11, maxZoom: 19, referrerPolicy: 'strict-origin-when-cross-origin',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+    },
     satellite: {
       label: 'Satellite (Esri)',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',

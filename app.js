@@ -15,11 +15,11 @@
   const lsGet = (k, d) => { try { const v = localStorage.getItem(LS + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(LS + k, JSON.stringify(v)); } catch (e) { /* storage unavailable: convenience only */ } };
   const saved = lsGet('settings', {});
-  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true, paths: 'roads' }, saved);
+  const S = Object.assign({ units: 'km', activity: 'run', paces: { walk: 720, run: 360 }, basemap: 'street', showPcn: true, preferPcn: true, avoidClosures: true, paths: 'roads', voice: false }, saved);
   S.paces = Object.assign({ walk: 720, run: 360 }, saved.paces || {});
   if (!ACT[S.activity]) S.activity = 'run';
-  let tool = 'pan', net = null, backend = null, editor = null, tilesBlocked = false;
-  const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures, paths: S.paths });
+  let tool = 'pan', net = null, backend = null, editor = null, tilesBlocked = false, navOn = false;   // navOn: following the route (Start)
+  const saveSettings = () => lsSet('settings', { units: S.units, activity: S.activity, paces: S.paces, basemap: S.basemap, showPcn: S.showPcn, preferPcn: S.preferPcn, avoidClosures: S.avoidClosures, paths: S.paths, voice: S.voice });
 
   // ---------------- small UI helpers ----------------
   let toastT = 0;
@@ -125,7 +125,7 @@
   const pcnOverlay = new NetLayer({ tileSize: TILE, roads: false, pcn: true, updateWhenZooming: false, keepBuffer: 3, attribution: 'Park connectors © NParks' });
   const tileLayers = {};
   for (const [id, b] of Object.entries(CFG.basemaps)) {
-    const tl = L.tileLayer(b.url, { minZoom: 11, maxZoom: 19, maxNativeZoom: b.maxZoom, attribution: b.attribution, crossOrigin: true });
+    const tl = L.tileLayer(b.url, { minZoom: 11, maxZoom: 19, maxNativeZoom: b.maxZoom, attribution: b.attribution, crossOrigin: true, referrerPolicy: b.referrerPolicy || false });
     tl._stats = { load: 0, error: 0 };
     tl.on('tileload', () => { tl._stats.load++; }); tl.on('tileerror', () => { tl._stats.error++; checkTiles(tl); });
     tileLayers[id] = tl;
@@ -133,6 +133,11 @@
   let activeBase = null;
   function checkTiles(tl) {
     if (tilesBlocked || tl !== activeBase) return;
+    // one provider failing while OneMap works: go back to OneMap rather than the offline map
+    if (tl._stats.error >= 4 && tl._stats.load === 0 && tl !== tileLayers.street && tileLayers.street._stats.load > 0) {
+      tl._failed = true; setBasemap('street'); toast(`${CFG.basemaps[Object.keys(tileLayers).find(k => tileLayers[k] === tl)].label} tiles could not load, so this is OneMap again.`, 6000);
+      return;
+    }
     if (tl._stats.error >= 4 && tl._stats.load === 0) {
       tilesBlocked = true; setBasemap('offline', true);
       showBanner('Online map tiles cannot load here, so this is the built-in offline map of streets, paths and park connectors.');
@@ -237,7 +242,7 @@
   }
   window.addEventListener('blur', () => setSpacePan(false));
   map.on('click', (e) => {
-    if (!editor || tool === 'draw' || tool === 'erase') return;
+    if (!editor || navOn || tool === 'draw' || tool === 'erase') return;
     if (tool === 'waypoint') { openWaypoint(null, e.latlng.lat, e.latlng.lng); return; }
     report(editor.addPoint(e.latlng.lat, e.latlng.lng, tolM(36)));
   });
@@ -260,15 +265,15 @@
     if (cs.length) {
       const closed = cs.length > 1 && RE.geo.D(cs[0], cs[cs.length - 1]) < 5;
       // in Draw/Eraser mode the end markers must not swallow the stroke that starts on them
-      const live = tool === 'pan' || tool === 'waypoint';
+      const live = !navOn && (tool === 'pan' || tool === 'waypoint');
       const st = L.marker(cs[0], { icon: icon('start'), title: 'Start: tap for finish options', zIndexOffset: 900, interactive: live, keyboard: live }).addTo(markerLayer);
       if (live) st.on('click', () => openFinish(st.getLatLng()));
       if (cs.length > 1 && !closed) { const en = L.marker(cs[cs.length - 1], { icon: icon('end'), title: 'End: tap for finish options', zIndexOffset: 900, interactive: live, keyboard: live }).addTo(markerLayer); if (live) en.on('click', () => openFinish(en.getLatLng())); }
     }
     wpLayer.clearLayers();
     editor.wps.forEach((w, i) => {
-      const m = L.marker([w.lat, w.lon], { icon: icon('wp', String(i + 1), 28), draggable: true, title: w.title, zIndexOffset: 1000 }).addTo(wpLayer);
-      m.on('click', () => openWaypoint(w));
+      const m = L.marker([w.lat, w.lon], { icon: icon('wp', String(i + 1), 28), draggable: !navOn, title: w.title, zIndexOffset: 1000 }).addTo(wpLayer);
+      m.on('click', () => { if (!navOn) openWaypoint(w); });
       m.on('dragend', () => { const p = m.getLatLng(); editor.updateWaypoint(w.id, { lat: p.lat, lon: p.lng }); });
     });
     $('#undoBtn').disabled = !editor.canUndo(); $('#redoBtn').disabled = !editor.canRedo();
@@ -332,6 +337,9 @@
     const pace = S.paces[S.activity];
     $('#statTime').textContent = fmtTime(L0 / (S.units === 'mi' ? MI : 1000) * (S.units === 'mi' ? pace * MI / 1000 : pace));
     $('#statTimeLabel').textContent = `${ACT[S.activity].label} time`;
+    $('#startBtn').disabled = editor.coords.length < 2;
+    const fl = $('#finishLine'); fl.hidden = !editor.finish;
+    if (editor.finish) $('#finishText').textContent = `${editor.finish === 'outback' ? 'Out & back' : 'Loop back to the start'} on: ${fmtDist(editor.baseDistance)} ${unitLabel()} out. Taps and traces still change the way out.`;
     const onClosed = closuresOnRoute(); const cw = $('#closureWarn'); cw.hidden = !onClosed.length;
     if (onClosed.length) cw.textContent = `This route goes through a closed stretch: ${onClosed.join(', ')}. Turn on “Route around closures” in Settings, or redraw that part.`;
     clearTimeout(elevTimer);
@@ -475,13 +483,18 @@
   function openFinish(point) {
     const pop = $('#finishPop'); pop.textContent = '';
     const h = document.createElement('h4'); h.textContent = 'Finish route'; pop.appendChild(h);
-    const add = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = label; b.addEventListener('click', () => { closePops(); report(fn()); }); pop.appendChild(b); };
-    add('Out & back (retrace to the start)', () => editor.outAndBack());
-    add('Close the loop (route back to the start)', () => editor.closeLoop());
+    const add = (label, fn, checked) => {
+      const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+      if (checked !== undefined) b.setAttribute('aria-checked', String(checked));
+      b.textContent = label; b.addEventListener('click', () => { closePops(); report(fn()); }); pop.appendChild(b);
+    };
+    // the finish stays live: tap again to take it off, and the route can still be changed while it is on
+    add(editor.finish === 'outback' ? 'Out & back: on (tap to take it off)' : 'Out & back (retrace to the start)', () => editor.outAndBack(), editor.finish === 'outback');
+    add(editor.finish === 'loop' ? 'Loop: on (tap to take it off)' : 'Close the loop (route back to the start)', () => editor.closeLoop(), editor.finish === 'loop');
     add('Reverse direction', () => editor.reverse());
     const sep = document.createElement('div'); sep.className = 'sep'; pop.appendChild(sep);
     const row = document.createElement('div'); row.className = 'row';
-    row.innerHTML = `<label for="trimKm" class="small">Trim to</label><input id="trimKm" type="number" min="0.1" step="0.1" inputmode="decimal" value="${(editor.distance / (S.units === 'mi' ? MI : 1000) / 2).toFixed(1)}"><span class="small">${unitLabel()}</span><button type="button" class="btn">Trim</button>`;
+    row.innerHTML = `<label for="trimKm" class="small">Trim to</label><input id="trimKm" type="number" min="0.1" step="0.1" inputmode="decimal" value="${((editor.finish ? editor.baseDistance : editor.distance / 2) / (S.units === 'mi' ? MI : 1000)).toFixed(1)}"><span class="small">${unitLabel()}</span><button type="button" class="btn">Trim</button>`;
     row.querySelector('button').addEventListener('click', () => { const v = parseFloat(row.querySelector('input').value); closePops(); report(editor.trim(v * (S.units === 'mi' ? MI : 1000))); });
     pop.appendChild(row);
     placePop(pop, $('#finishBtn'), point);
@@ -517,14 +530,23 @@
       it.innerHTML = `<button type="button" class="open"><span class="t"></span><span class="d"></span></button><span class="acts"><button type="button" data-a="del">Delete</button></span>`;
       it.querySelector('.t').textContent = r.name;
       it.querySelector('.d').textContent = `${fmtDist(r.distance || 0)} ${unitLabel()} · ${new Date(r.updated || r.created || Date.now()).toLocaleDateString()}`;
-      it.querySelector('.open').addEventListener('click', () => { loadRoute(RE.decode(r.poly), r.wps || []); closeDrawer(); toast(`Opened ${r.name}`); });
+      it.querySelector('.open').addEventListener('click', () => { loadRoute(RE.decode(r.poly), r.wps || [], r); closeDrawer(); toast(`Opened ${r.name}`); });
       it.querySelector('[data-a="del"]').addEventListener('click', () => { store.remove(r); toast('Deleted'); });
       box.appendChild(it);
     }
     $('#storeNote').textContent = 'Saved in this browser only. Export a GPX to keep a copy.';
   }
-  function loadRoute(coords, wps) {
-    return editor.load(coords, wps.map(w => ({ lat: w.lat, lon: w.lon, title: w.title || 'Waypoint', notes: w.notes || '' }))).then((r) => { fitRoute(); return r; });
+  /** What is stored for a route (draft, saved): the shown route, and with a finish the route as drawn too. */
+  function routeRecord() {
+    const r = { poly: RE.encode(editor.coords), wps: editor.wps.map(({ lat, lon, title, notes }) => ({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), title, notes })) };
+    if (editor.finish && editor.base) { r.finish = editor.finish; r.base = RE.encode(editor.base); }
+    return r;
+  }
+  /** Open a stored route; one with a finish comes back with the finish still removable. */
+  function loadRoute(coords, wps, rec) {
+    const ws = wps.map(w => ({ lat: w.lat, lon: w.lon, title: w.title || 'Waypoint', notes: w.notes || '' }));
+    const p = rec && rec.finish && rec.base ? editor.load(RE.decode(rec.base), ws, rec.finish) : editor.load(coords, ws);
+    return p.then((r) => { fitRoute(); return r; });
   }
   function fitRoute() {
     const pts = editor.coords.concat(editor.wps.map(w => [w.lat, w.lon])); if (!pts.length) return;
@@ -538,7 +560,7 @@
   $('#saveCancel').addEventListener('click', () => $('#saveDialog').close());
   $('#saveForm').addEventListener('submit', async (ev) => {
     ev.preventDefault(); const name = $('#saveName').value.trim() || 'My route'; $('#saveDialog').close();
-    const now = Date.now(), r = { id: 'r' + now.toString(36), kind: 'route', name, poly: RE.encode(editor.coords), wps: editor.wps.map(({ lat, lon, title, notes }) => ({ lat: +lat.toFixed(6), lon: +lon.toFixed(6), title, notes })), distance: Math.round(editor.distance), activity: S.activity, created: now, updated: now };
+    const now = Date.now(), r = Object.assign({ id: 'r' + now.toString(36), kind: 'route', name }, routeRecord(), { distance: Math.round(editor.distance), activity: S.activity, created: now, updated: now });
     try { store.save(r); toast(`Saved “${name}” in this browser`); }
     catch (e) { toast(e.message || 'Could not save'); }
   });
@@ -578,10 +600,10 @@
   }
   // drag & drop a GPX anywhere
   let dragDepth = 0;
-  window.addEventListener('dragenter', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) { dragDepth++; $('#dropzone').hidden = false; e.preventDefault(); } });
+  window.addEventListener('dragenter', (e) => { if (!navOn && e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) { dragDepth++; $('#dropzone').hidden = false; e.preventDefault(); } });
   window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('#dropzone').hidden = true; });
   window.addEventListener('dragover', (e) => e.preventDefault());
-  window.addEventListener('drop', async (e) => { e.preventDefault(); dragDepth = 0; $('#dropzone').hidden = true; const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) await importFile(f); });
+  window.addEventListener('drop', async (e) => { e.preventDefault(); dragDepth = 0; $('#dropzone').hidden = true; const f = e.dataTransfer && e.dataTransfer.files[0]; if (f && !navOn) await importFile(f); });   // not while following
   $('#shareBtn').addEventListener('click', async () => {
     if (editor.coords.length < 2) { toast('Draw a route first'); return; }
     const link = `${location.href.split('#')[0]}#route=${RE.toShare(editor.coords, editor.wps)}`;
@@ -648,6 +670,177 @@
     }
   }
   $('#view3dBtn').addEventListener('click', () => set3d(!in3d));
+
+  // ---------------- follow the route: turn-by-turn ----------------
+  // Start: the page asks for the location (or simulates a runner), RouteTracker (engine.js) works out the
+  // progress along the route, and the panel shows the next turn and the metres to it, with an optional
+  // voice. The cues come from the route engine (engine.turnCues: street names from the walk network).
+  const nav = { on: false, tracker: null, coords: [], cues: [], watch: null, sim: null, simD: 0, follow: true, t0: 0, timer: 0,
+    wake: null, called: new Map(), last: null, layer: L.layerGroup(), finished: false };
+  const navDist = (m) => (S.units === 'mi'
+    ? (m < 0.1 * MI ? `${Math.max(10, Math.round(m / 0.9144 / 10) * 10)} yd` : `${(m / MI).toFixed(m < MI ? 2 : 1)} mi`)
+    : (m < 1000 ? `${m < 100 ? Math.max(5, Math.round(m / 5) * 5) : Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`));
+  const speakDist = (m) => (S.units === 'mi' ? (m < 0.1 * MI ? `${Math.round(m / 0.9144 / 10) * 10} yards` : `${(m / MI).toFixed(1)} miles`) : (m < 1000 ? `${Math.round(m / 10) * 10} metres` : `${(m / 1000).toFixed(1)} kilometres`));
+  const COMPASS8 = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+  /** Arrow for a turn: a stem from the bottom that bends by the turn's angle; a U for turning around. */
+  function turnIcon(c, bearing) {
+    const st = 'fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"';
+    if (!c) return '';
+    if (c.type === 'arrive') return `<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="15" ${st}/><circle cx="24" cy="24" r="6" fill="currentColor"/></svg>`;
+    if (c.type === 'uturn') return `<svg viewBox="0 0 48 48"><path d="M30 42V20a8 8 0 0 0-16 0v12" ${st}/><path d="M8 26l6 7 6-7" ${st}/></svg>`;
+    const a = (bearing !== undefined ? bearing : c.type === 'depart' || c.type === 'continue' ? 0 : c.angle) * Math.PI / 180;
+    const x = 24 + 16 * Math.sin(a), y = 22 - 16 * Math.cos(a), h = (d) => [x - 9 * Math.sin(a + d), y + 9 * Math.cos(a + d)];
+    const [p1, p2] = [h(0.6), h(-0.6)];
+    return `<svg viewBox="0 0 48 48"><path d="M24 44V22L${x.toFixed(1)} ${y.toFixed(1)}" ${st}/><path d="M${p1[0].toFixed(1)} ${p1[1].toFixed(1)}L${x.toFixed(1)} ${y.toFixed(1)}L${p2[0].toFixed(1)} ${p2[1].toFixed(1)}" ${st}/></svg>`;
+  }
+  function say(text) {
+    if (!S.voice || !('speechSynthesis' in window)) return;
+    try { const u = new SpeechSynthesisUtterance(text); u.lang = 'en-GB'; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { /* no voice */ }
+  }
+  function buzz() { try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) { /* none */ } }
+  /** Calls before a turn: once when it comes within 150 m (if it was further), once at 30 m. */
+  function announce(c, toNext) {
+    if (!c || c.type === 'depart') return;
+    const done = nav.called.get(c.d) || 0;
+    if (toNext <= 30 && done < 2) { nav.called.set(c.d, 2); say(c.type === 'arrive' ? 'You have arrived' : c.text); buzz(); }
+    else if (toNext <= 150 && done < 1 && c.d - (nav.firstAlong || 0) > 200) { nav.called.set(c.d, 1); say(`In ${speakDist(toNext)}, ${c.type === 'arrive' ? 'you will arrive' : c.text.charAt(0).toLowerCase() + c.text.slice(1)}`); }
+  }
+  function renderNav(o) {
+    const warn = $('#navWarn');
+    $('#navDone').textContent = fmtDist(o.along); $('#navLeft').textContent = fmtDist(Math.max(0, o.left));
+    $('#navDoneL').textContent = `${unitLabel()} done`; $('#navLeftL').textContent = `${unitLabel()} to go`;
+    if (o.status === 'to-start') {
+      $('#navIcon').innerHTML = turnIcon({ type: 'continue' }, 0);
+      $('#navDist').textContent = navDist(o.dist);
+      $('#navText').textContent = `Head ${COMPASS8[Math.round(o.bearing / 45) % 8]} to the start`;
+      $('#navThen').textContent = nav.cues[0] ? `Then ${nav.cues[0].text.charAt(0).toLowerCase() + nav.cues[0].text.slice(1)}` : '';
+      warn.hidden = true; return;
+    }
+    if (o.status === 'done') {
+      if (!nav.finished) { nav.finished = true; say('You have arrived'); buzz(); }
+      $('#navIcon').innerHTML = turnIcon({ type: 'arrive' });
+      $('#navDist').textContent = fmtTime((Date.now() - nav.t0) / 1000);
+      $('#navText').textContent = `You have arrived: ${fmtDist(o.L)} ${unitLabel()}`; $('#navThen').textContent = ''; warn.hidden = true;
+      return;
+    }
+    const c = o.next;
+    $('#navIcon').innerHTML = turnIcon(c);
+    $('#navDist').textContent = c ? navDist(o.toNext) : '';
+    $('#navText').textContent = c ? c.text : '';
+    $('#navThen').textContent = o.then && o.then.d - c.d < 400 ? `Then ${o.then.text.charAt(0).toLowerCase() + o.then.text.slice(1)}` : '';
+    warn.hidden = o.status !== 'off';
+    if (o.status === 'off') {
+      warn.textContent = `Off the route: the nearest part is ${navDist(o.dist)} to the ${COMPASS8[Math.round(o.bearing / 45) % 8]}`;
+      if (!nav.wasOff) { nav.wasOff = true; say('Off the route'); buzz(); }
+    } else { nav.wasOff = false; announce(c, o.toNext); }
+  }
+  /** heading: the phone's direction of travel (degrees) while moving, or null; it tells the way out of an
+   *  out & back from the way home where both use the same path. */
+  function onFix(lat, lon, acc, heading = null) {
+    if (!nav.on) return;
+    const o = nav.tracker.update(lat, lon, acc, heading);
+    if (nav.firstAlong === undefined && o.status !== 'to-start') nav.firstAlong = o.along;
+    nav.last = o;
+    if (!nav.me) {
+      nav.acc = L.circle([lat, lon], { pane: 'nav', radius: acc || 10, color: '#2563eb', weight: 1, fillOpacity: .12, interactive: false }).addTo(nav.layer);
+      nav.me = L.circleMarker([lat, lon], { pane: 'nav', radius: 8, color: '#ffffff', weight: 3, fillColor: '#2563eb', fillOpacity: 1, interactive: false }).addTo(nav.layer);
+    } else { nav.me.setLatLng([lat, lon]); nav.acc.setLatLng([lat, lon]).setRadius(acc || 10); }
+    nav.doneLine.setLatLngs(o.along > 0 ? RE.geo.slice(nav.coords, 0, o.along) : []);
+    // follow by panning only: the zoom is the runner's to choose, and Leaflet drops a setView that arrives
+    // during a zoom animation (a late fix would then leave the map behind)
+    if (nav.follow) map.panTo([lat, lon], { animate: true, duration: 0.4 });
+    renderNav(o);
+    if (o.status === 'done') stopTracking();
+  }
+  function stopTracking() {
+    if (nav.watch !== null) { navigator.geolocation.clearWatch(nav.watch); nav.watch = null; }
+    if (nav.sim) { clearInterval(nav.sim); nav.sim = null; $('#navSim').setAttribute('aria-pressed', 'false'); }
+  }
+  function startGps() {
+    if (!navigator.geolocation) { $('#navText').textContent = 'This browser cannot tell the page where you are. Press Simulate to try the directions.'; return; }
+    nav.watch = navigator.geolocation.watchPosition((p) => {
+      if (nav.sim) return;
+      const c = p.coords, moving = Number.isFinite(c.heading) && Number.isFinite(c.speed) && c.speed > 0.8;
+      onFix(c.latitude, c.longitude, c.accuracy, moving ? c.heading : null);
+    }, (err) => {
+      if (err.code === 1) { $('#navText').textContent = 'Location is off for this page. Allow it in the browser settings, or press Simulate.'; stopTracking(); }
+      else $('#navText').textContent = 'Waiting for GPS…';
+    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+  }
+  async function keepAwake() {
+    try {
+      if (!('wakeLock' in navigator)) return;
+      const w = await navigator.wakeLock.request('screen'); nav.wake = w;
+      w.addEventListener('release', () => { if (nav.wake === w) nav.wake = null; });   // screen off or tab hidden: ask again on return
+    } catch (e) { nav.wake = null; }
+  }
+  document.addEventListener('visibilitychange', () => { if (nav.on && document.visibilityState === 'visible' && !nav.wake) keepAwake(); });
+  function primeVoice() {   // some phones only allow speech that starts from a tap: speak nothing, quietly, now
+    try { if (S.voice && 'speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) { /* no voice */ }
+  }
+  async function startNav() {
+    if (!editor || editor.coords.length < 2) { toast('Draw a route first'); return; }
+    primeVoice();
+    if (in3d) await set3d(false);
+    closePops(); closeDrawer(); if (tool !== 'pan') setTool(tool);
+    $('#startBtn').disabled = true;
+    if (map._animatingZoom) await new Promise((r) => { map.once('zoomend', r); setTimeout(r, 600); });   // Leaflet drops a setView mid-zoom
+    const res = await backend.cues(); $('#startBtn').disabled = false;
+    if (!res.cues.length) { toast('This route is too short to follow'); return; }
+    navOn = true; renderRoute();
+    Object.assign(nav, { on: true, coords: res.coords, cues: res.cues, tracker: new RE.RouteTracker(res.coords, res.cues), follow: true, t0: Date.now(), called: new Map(), last: null, finished: false, firstAlong: undefined, me: null, acc: null, wasOff: false });
+    if (!map.getPane('nav')) map.createPane('nav').style.zIndex = 460;   // above the route (450), below markers
+    nav.layer.clearLayers().addTo(map);
+    nav.doneLine = L.polyline([], { pane: 'nav', color: '#8a948f', weight: 7, opacity: .95, interactive: false }).addTo(nav.layer);
+    document.body.classList.add('nav'); $('#navTop').hidden = false; $('#navBottom').hidden = false; $('#navRecenter').hidden = true;
+    $('#navIcon').innerHTML = turnIcon(res.cues[0]); $('#navDist').textContent = ''; $('#navText').textContent = 'Waiting for your location…';
+    $('#navThen').textContent = res.cues[0].text; $('#navWarn').hidden = true;
+    $('#navVoice').setAttribute('aria-pressed', String(!!S.voice)); $('#navVoice').textContent = S.voice ? 'Voice on' : 'Voice off';
+    clearInterval(nav.timer); nav.timer = setInterval(() => { if (nav.on && !nav.finished) $('#navTime').textContent = fmtTime((Date.now() - nav.t0) / 1000); }, 1000);
+    $('#navTime').textContent = '0:00';
+    keepAwake(); startGps();
+    map.setView(res.coords[0], Math.max(map.getZoom(), 16), { animate: false });
+  }
+  function stopNav() {
+    stopTracking(); clearInterval(nav.timer); nav.on = false; navOn = false;
+    if (nav.wake) { nav.wake.release().catch(() => {}); nav.wake = null; }
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    nav.layer.clearLayers(); map.removeLayer(nav.layer);
+    document.body.classList.remove('nav'); $('#navTop').hidden = true; $('#navBottom').hidden = true;
+    renderRoute();
+  }
+  /** Simulate: a runner moves along the route at 8x your pace (with a little GPS-like scatter). */
+  function toggleSim() {
+    if (nav.sim) { clearInterval(nav.sim); nav.sim = null; $('#navSim').setAttribute('aria-pressed', 'false'); return; }
+    if (nav.finished) return;
+    const speed = 8 * 1000 / (S.paces[S.activity] || 360), cum = RE.geo.cumul(nav.coords), L0 = cum[nav.coords.length - 1];
+    nav.simD = nav.last ? nav.last.along : 0; nav.follow = true; $('#navRecenter').hidden = true;
+    $('#navSim').setAttribute('aria-pressed', 'true');
+    let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+    nav.sim = setInterval(() => {
+      nav.simD = Math.min(L0, nav.simD + speed * 0.5);
+      const p = RE.geo.pointAt(nav.coords, cum, nav.simD), q = RE.geo.pointAt(nav.coords, cum, Math.min(L0, nav.simD + 5));
+      const hd = (Math.atan2((q[1] - p[1]) * Math.cos(p[0] * Math.PI / 180), q[0] - p[0]) * 180 / Math.PI + 360) % 360;
+      onFix(p[0] + rnd() * 6 / 110574, p[1] + rnd() * 6 / 111300, 8, nav.simD < L0 ? hd : null);
+      if (nav.simD >= L0 && nav.sim) { clearInterval(nav.sim); nav.sim = null; $('#navSim').setAttribute('aria-pressed', 'false'); }
+    }, 500);
+  }
+  $('#startBtn').addEventListener('click', startNav);
+  $('#navStop').addEventListener('click', stopNav);
+  $('#navSim').addEventListener('click', toggleSim);
+  $('#navVoice').addEventListener('click', () => {
+    S.voice = !S.voice; saveSettings(); $('#navVoice').setAttribute('aria-pressed', String(S.voice)); $('#navVoice').textContent = S.voice ? 'Voice on' : 'Voice off';
+    if (S.voice) say('Voice on');
+  });
+  $('#navRecenter').addEventListener('click', () => { nav.follow = true; $('#navRecenter').hidden = true; if (nav.me) map.setView(nav.me.getLatLng(), Math.max(map.getZoom(), 16)); });
+  map.on('dragstart', () => { if (nav.on) { nav.follow = false; $('#navRecenter').hidden = false; } });
+  // a pan cut short by the next fix, or a zoom: catch up with the latest position
+  map.on('moveend', () => {
+    if (!nav.on || !nav.follow || !nav.me) return;
+    const p = map.latLngToContainerPoint(nav.me.getLatLng()), c = map.getSize().divideBy(2);
+    if (p.distanceTo(c) > 24) map.panTo(nav.me.getLatLng(), { animate: true, duration: 0.3 });
+  });
+
   $('#layersBtn').addEventListener('click', () => { const p = $('#layersPop'); if (!p.hidden) { closePops(); return; } closePops(); renderLayersPop(); placePop(p, $('#layersBtn')); });
   $('#finishBtn').addEventListener('click', () => { if (!$('#finishPop').hidden) { closePops(); return; } if (editor.coords.length < 2) { toast('Draw a route first'); return; } closePops(); openFinish(null); });
   let meMk = null, meCircle = null;
@@ -666,6 +859,7 @@
   $('#toolSnap').addEventListener('click', () => setSnap(!editor.snap));
   $('#undoBtn').addEventListener('click', () => report(editor.undo()));
   $('#redoBtn').addEventListener('click', () => report(editor.redo()));
+  $('#finishOff').addEventListener('click', () => report(editor.removeFinish()));
   $('#clearBtn').addEventListener('click', () => report(editor.clear()).then((r) => { if (r.ok) toast('Cleared. Undo brings it back.'); }));
   $('#menuBtn').addEventListener('click', openDrawer); $('#closeDrawer').addEventListener('click', closeDrawer); $('#scrim').addEventListener('click', closeDrawer);
   document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.popover, #layersBtn, #finishBtn, .leaflet-marker-icon')) closePops(); if (!e.target.closest('#searchCard')) $('#results').hidden = true; });
@@ -685,6 +879,10 @@
     if (e.key !== 'Shift') shiftAlone = false;
     if (typing(e.target) || !editor) return;
     const mod = e.ctrlKey || e.metaKey;
+    if (navOn) {   // following the route: no editing; Escape does nothing (Stop is a button), +/- zoom
+      if (!mod && (e.key === '+' || e.key === '=')) map.zoomIn(); else if (!mod && (e.key === '-' || e.key === '_')) map.zoomOut();
+      return;
+    }
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); report(e.shiftKey ? editor.redo() : editor.undo()); return; }
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); report(editor.redo()); return; }
     if (mod || e.altKey) return;
@@ -710,7 +908,7 @@
   async function loadExample() {
     if (editor.coords.length) editor.clear();
     for (const t of EXAMPLE.taps) editor.addPoint(...t, 100);
-    await editor.outAndBack(); fitRoute(); toast('Example loaded: Bishan Road bridge to Braddell Road and back. Undo removes it.', 4500);
+    await editor.outAndBack(); fitRoute(); toast('Example loaded: Bishan Road bridge to Braddell Road and back.', 4500);
   }
 
   // ---------------- backend (Web Worker) ----------------
@@ -738,6 +936,7 @@
     constructor(be) { this.be = be; this.coords = []; this.wps = []; this.snap = true; this._u = false; this._r = false; this.listeners = []; this.pending = new Map(); this.seq = 0; }
     onChange(fn) { this.listeners.push(fn); }
     get distance() { return RE.geo.length(this.coords); }
+    get baseDistance() { return RE.geo.length(this.finish ? this.base : this.coords); }
     canUndo() { return this._u; }
     canRedo() { return this._r; }
     _cmd(op, ...args) {
@@ -746,7 +945,7 @@
     }
     _state(m) {
       const done = this.pending.get(m.id); this.pending.delete(m.id); busy(-1);
-      if (m.state) { this.coords = m.state.coords; this.wps = m.state.wps; this._u = m.state.canUndo; this._r = m.state.canRedo; this.snap = m.state.snap; }
+      if (m.state) { this.coords = m.state.coords; this.wps = m.state.wps; this._u = m.state.canUndo; this._r = m.state.canRedo; this.snap = m.state.snap; this.finish = m.state.finish; this.base = m.state.base; }
       if (m.changed) for (const f of this.listeners) f(this);
       if (done) done(m.result || { ok: false, msg: 'No answer from the route engine' });
     }
@@ -755,7 +954,7 @@
     idle() { return this.pending.size ? new Promise((r) => { const t = setInterval(() => { if (!this.pending.size) { clearInterval(t); r(); } }, 20); }) : Promise.resolve(); }
     setSnap(v) { this.snap = !!v; return this._cmd('setSnap', !!v); }
   }
-  for (const op of ['addPoint', 'addTrace', 'erase', 'outAndBack', 'closeLoop', 'reverse', 'trim', 'clear', 'load', 'undo', 'redo', 'addWaypoint', 'updateWaypoint', 'removeWaypoint'])
+  for (const op of ['addPoint', 'addTrace', 'erase', 'outAndBack', 'closeLoop', 'removeFinish', 'reverse', 'trim', 'clear', 'load', 'undo', 'redo', 'addWaypoint', 'updateWaypoint', 'removeWaypoint'])
     EditorProxy.prototype[op] = function (...args) { return this._cmd(op, ...args); };
 
   // a small "Working…" note when an edit takes a moment (long traces on slow phones)
@@ -778,6 +977,7 @@
       else if (m.t === 'state') editor._state(m);
       else if (m.t === 'settings') editor.profile = m.profile;
       else if (m.t === 'path') { const f = waits.get(m.id); waits.delete(m.id); if (f) f(m.coords); }
+      else if (m.t === 'cues') { const f = waits.get(m.id); waits.delete(m.id); if (f) f({ coords: m.coords, cues: m.cues }); }
       else if (m.t === 'workerError' && engine.inline && !net) {  // the worker could not start: run the engine here
         console.warn('worker failed, running the route engine in the page:', m.msg);
         engine.terminate(); engine = engine.inline(); engine.post(loadRequest);
@@ -794,6 +994,7 @@
       settings: (o) => engine.post(Object.assign({ t: 'settings' }, o)),
       blocked: (edges) => engine.post({ t: 'blocked', edges }),
       path: (a, b) => new Promise((r) => { const id = ++pathSeq; waits.set(id, r); engine.post({ t: 'path', id, a, b }); }),
+      cues: () => new Promise((r) => { const id = ++pathSeq; waits.set(id, r); engine.post({ t: 'cues', id }); }),
     };
     editor = new EditorProxy(backend);
     const t0 = performance.now();
@@ -810,7 +1011,7 @@
     PX = res.parts.px; PY = res.parts.py; [PX0, PY0] = res.parts.pxy0;   // worked out in the worker
     await loadClosures();
     let draftT = 0;
-    editor.onChange(() => { renderRoute(); if (in3d) view3d.update(routeData()); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', { poly: RE.encode(editor.coords), wps: editor.wps }), 400); });
+    editor.onChange(() => { renderRoute(); if (in3d) view3d.update(routeData()); clearTimeout(draftT); draftT = setTimeout(() => lsSet('draft', routeRecord()), 400); });
     buildNameIndex();
     offlineBase.redraw(); pcnOverlay.redraw();
     // open: shared link > last draft > example
@@ -818,7 +1019,7 @@
     const m = /^#route=([\w-]+)$/.exec(location.hash);
     if (m) { try { const sh = RE.fromShare(m[1]); await loadRoute(sh.coords, sh.wps); opened = true; toast('Opened a shared route'); } catch (e) { toast('That share link is damaged'); } }
     const draft = lsGet('draft', null);
-    if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { await loadRoute(cs, draft.wps || []); opened = true; } }
+    if (!opened && draft && draft.poly) { const cs = RE.decode(draft.poly); if (cs.length) { await loadRoute(cs, draft.wps || [], draft); opened = true; } }
     if (!opened) renderRoute();
     $('#loading').hidden = true;
     if (tilesBlocked) showBanner('Offline map of streets, paths and park connectors.');
@@ -828,7 +1029,7 @@
     window.__jalan = { map, get editor() { return editor; }, get net() { return net; }, get engine() { return backend && backend.kind; },
       get profile() { return editor && editor.profile; }, idle: () => (editor ? editor.idle() : Promise.resolve()),
       path: (a, b) => backend.path(a, b), get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; },
-      get in3d() { return in3d; }, get map3d() { return view3d.map; } };
+      get in3d() { return in3d; }, get map3d() { return view3d.map; }, get nav() { return nav; }, fix: (lat, lon, acc, hd) => onFix(lat, lon, acc, hd) };
   }
   boot();
 })();
