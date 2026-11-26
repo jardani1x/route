@@ -14,14 +14,15 @@ import asyncio, base64, json, math, os, re, sys
 from playwright.async_api import async_playwright
 
 NET_FILE = os.environ.get('NET_FILE')
+BROWSER = os.environ.get('BROWSER', 'chromium')   # chromium, or webkit (Safari's engine)
 URL = 'http://localhost:8766/index.html' + ('?worker=0' if os.environ.get('ENGINE') == 'inline' else '')
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
 results, osm_requests = {}, []
 
 
-async def new_page(b, viewport):
+async def new_page(b, viewport, allow=True):
     ctx = await b.new_context(viewport=viewport, geolocation={'latitude': 1.3620, 'longitude': 103.8480, 'accuracy': 10},
-                              permissions=['geolocation'])
+                              permissions=['geolocation'] if allow else [])
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))
     await pg.route(re.compile(r'api\.open-meteo\.com|arcgisonline\.com|openfreemap\.org'), lambda r: r.abort())
@@ -62,7 +63,7 @@ ATTR_CLEAR = """(() => { const a = document.querySelector('.leaflet-control-attr
 
 async def main():
     async with async_playwright() as p:
-        b = await p.chromium.launch(args=['--no-sandbox'])
+        b = await (p.webkit.launch() if BROWSER == 'webkit' else p.chromium.launch(args=['--no-sandbox']))
         ctx, pg, errs = await new_page(b, {'width': 1100, 'height': 760})
 
         # ---- 1. out & back / loop can be taken off and the route changed afterwards ----
@@ -145,6 +146,60 @@ async def main():
         r['basemap_kept'] = await pg.evaluate("JSON.parse(localStorage.getItem('jalan.settings') || localStorage.getItem('settings') || '{}').basemap || null")
         r['errors'] = errs
 
+        # ---- 2b. the real browser location (watchPosition), not the test hook ----
+        r = results['live'] = {}
+        ctx3, lp, lerr = await new_page(b, {'width': 390, 'height': 780})
+        await lp.click('#exampleBtn'); await lp.evaluate("window.__jalan.idle()")
+        route = await lp.evaluate("(() => { const G = window.RouteEngine.geo, cs = window.__jalan.editor.coords, cum = G.cumul(cs); return [0, 40, 80, 120, 160, 200, 240, 280].map(d => G.pointAt(cs, cum, d)); })()")
+        await ctx3.set_geolocation({'latitude': route[0][0], 'longitude': route[0][1], 'accuracy': 6})
+        await lp.click('#startBtn'); await lp.wait_for_selector('#navTop:not([hidden])')
+        alongs, dots = [], []
+        for q in route:
+            await ctx3.set_geolocation({'latitude': q[0], 'longitude': q[1], 'accuracy': 6}); await lp.wait_for_timeout(700)
+            st = await lp.evaluate("(() => { const n = window.__jalan.nav; return [n.last ? Math.round(n.last.along) : null, n.me ? [n.me.getLatLng().lat, n.me.getLatLng().lng] : null]; })()")
+            alongs.append(st[0]); dots.append(st[1])
+        r['along_from_gps'] = alongs
+        r['dot_moves'] = dots[-1] is not None and abs(dots[-1][0] - route[-1][0]) < 1e-5 and abs(dots[-1][1] - route[-1][1]) < 1e-5
+        r['gps_line'] = await lp.inner_text('#navGps')
+        # the watch goes quiet: the watchdog starts it again, and fixes come through after that
+        await lp.evaluate("window.__jalan.loc.stallMs = 1500")
+        await lp.wait_for_timeout(4500)
+        r['watch_restarts'] = await lp.evaluate("window.__jalan.loc.restarts")
+        await ctx3.set_geolocation({'latitude': route[0][0] + 0.0001, 'longitude': route[0][1], 'accuracy': 6}); await lp.wait_for_timeout(700)
+        r['fix_after_restart'] = await lp.evaluate("(() => { const n = window.__jalan.nav; return !!n.me && Math.abs(n.me.getLatLng().lat - %f) < 1e-6; })()" % (route[0][0] + 0.0001))
+        await lp.evaluate("window.__jalan.loc.stallMs = 12000")
+        # approximate location (iPhone with Precise Location off): explained, progress not moved
+        a0 = await lp.evaluate("window.__jalan.nav.last.along")
+        await ctx3.set_geolocation({'latitude': 1.3500, 'longitude': 103.8400, 'accuracy': 3000}); await lp.wait_for_timeout(700)
+        r['approx_warning'] = await lp.evaluate("document.querySelector('#navWarn').hidden ? '' : document.querySelector('#navWarn').textContent")
+        r['approx_holds_progress'] = await lp.evaluate("window.__jalan.nav.last.along") == a0
+        await lp.click('#navStop')
+        # the location button: a live dot that follows; move the map to stop following; tap to follow again; tap to stop
+        await ctx3.set_geolocation({'latitude': route[0][0], 'longitude': route[0][1], 'accuracy': 8})
+        await lp.click('#locateBtn'); await lp.wait_for_function("window.__jalan.me !== null", timeout=8000)
+        mes = []
+        for q in route[1:5]:
+            await ctx3.set_geolocation({'latitude': q[0], 'longitude': q[1], 'accuracy': 8}); await lp.wait_for_timeout(700)
+            mes.append(await lp.evaluate("(() => { const m = window.__jalan.me, c = window.__jalan.map.getCenter(); return [m.lat, m.lng, Math.round(window.__jalan.map.distance(c, m))]; })()"))
+        r['locate_dot_moves'] = all(abs(m[0] - q[0]) < 1e-5 and abs(m[1] - q[1]) < 1e-5 for m, q in zip(mes, route[1:5]))
+        r['locate_map_follows_m'] = max(m[2] for m in mes)
+        box3 = await lp.locator('#map').bounding_box()
+        await lp.mouse.move(box3['x'] + 200, box3['y'] + 300); await lp.mouse.down(); await lp.mouse.move(box3['x'] + 120, box3['y'] + 220, steps=6); await lp.mouse.up()
+        r['drag_stops_following'] = await lp.get_attribute('#locateBtn', 'data-follow') == 'false' and await lp.get_attribute('#locateBtn', 'aria-pressed') == 'true'
+        await lp.click('#locateBtn'); r['tap_follows_again'] = await lp.get_attribute('#locateBtn', 'data-follow') == 'true'
+        await lp.click('#locateBtn')
+        r['tap_stops'] = await lp.evaluate("window.__jalan.me === null && window.__jalan.loc.watch === null") and await lp.get_attribute('#locateBtn', 'aria-pressed') == 'false'
+        # approximate location from the button: says how to turn on Precise Location
+        await ctx3.set_geolocation({'latitude': 1.3500, 'longitude': 103.8400, 'accuracy': 3000})
+        await lp.click('#locateBtn'); await lp.wait_for_timeout(900)
+        r['locate_approx_toast'] = await lp.evaluate("document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent")
+        await lp.click('#locateBtn')
+        r['errors'] = lerr
+        # location not allowed: says so instead of doing nothing
+        ctx4, dp, derr = await new_page(b, {'width': 390, 'height': 780}, allow=False)
+        await dp.click('#locateBtn'); await dp.wait_for_timeout(1500)
+        r['denied_toast'] = await dp.evaluate("document.querySelector('#toast').hidden ? '' : document.querySelector('#toast').textContent")
+
         # ---- 3. phone layout while following ----
         ctx2, ph, perr = await new_page(b, {'width': 390, 'height': 780})
         await ph.click('#exampleBtn'); await ph.evaluate("window.__jalan.idle()")
@@ -184,7 +239,15 @@ async def main():
         'phone layout fits (layers button clear of the panel, Stop tappable)': results['phone']['panels_fit'],
         'map follows the position': results['phone']['follows_m'] < 20,
         'map credits not covered on a phone (OneMap, OpenStreetMap)': all(results['phone']['credits_readable'].values()),
-        'no page errors': not s['errors'] and not results['phone']['errors'],
+        'Start follows the browser location (watchPosition)': all(a is not None for a in results['live']['along_from_gps'][1:]) and results['live']['along_from_gps'][-1] >= 230 and results['live']['dot_moves'],
+        'GPS status shown': results['live']['gps_line'].startswith('GPS ±'),
+        'a quiet watch is started again': results['live']['watch_restarts'] >= 1 and results['live']['fix_after_restart'],
+        'approximate location explained, progress held': 'approximate location' in results['live']['approx_warning'] and results['live']['approx_holds_progress'],
+        'location button: live dot that moves and is followed': results['live']['locate_dot_moves'] and results['live']['locate_map_follows_m'] < 25,
+        'location button: drag stops following, tap follows again, tap stops': results['live']['drag_stops_following'] and results['live']['tap_follows_again'] and results['live']['tap_stops'],
+        'location button: approximate location explained': 'approximate location' in results['live']['locate_approx_toast'],
+        'location refused: says so': 'Location is off' in (results['live']['denied_toast'] or ''),
+        'no page errors': not s['errors'] and not results['phone']['errors'] and not results['live']['errors'],
     }
     bad = [k for k, v in checks.items() if not v]
     for k, v in checks.items(): print(('PASS  ' if v else 'FAIL  ') + k)

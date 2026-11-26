@@ -42,7 +42,7 @@ jobs:
       - name: Install Playwright + Chromium
         run: |
           pip install playwright==1.48.0
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium webkit
 
       - name: Start a static server
         run: |
@@ -74,3 +74,6 @@ jobs:
             NET_FILE=/tmp/net-v3.bin.gz python tests/navigate.py                 # cues from the footpath network
             NET_FILE=/tmp/net-v3.bin.gz ENGINE=inline python tests/navigate.py   # engine in the page
           fi
+
+      - name: Browser tests in WebKit (Safari's engine) - Start, live location, location button
+        run: BROWSER=webkit python tests/navigate.py
