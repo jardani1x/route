@@ -7,6 +7,7 @@
  *   in  {t:'settings', profile?, pcnFactor?, avoidClosures?}  -> {t:'settings', profile}
  *   in  {t:'blocked', edges}               (closures: edge ids the page worked out on its own copy)
  *   in  {t:'cmd', id, op, args}            -> {t:'state', id, result, changed, state}
+ *   in  {t:'cues', id}                     -> {t:'cues', id, coords, cues}   (turn-by-turn, engine.turnCues)
  *   in  {t:'path', id, a, b}               -> {t:'path', id, coords}   (tests only)
  *
  * `parts` is a light copy of the network for the page: coordinates as 32-bit floats (good to about a
@@ -17,7 +18,7 @@
   else root.RouteBackend = factory(root.RunCore, root.RouteEngine);
 })(typeof self !== 'undefined' ? self : this, function (RC, RE) {
   'use strict';
-  const OPS = new Set(['addPoint', 'addTrace', 'erase', 'outAndBack', 'closeLoop', 'reverse', 'trim', 'clear', 'load',
+  const OPS = new Set(['addPoint', 'addTrace', 'erase', 'outAndBack', 'closeLoop', 'removeFinish', 'reverse', 'trim', 'clear', 'load',
     'undo', 'redo', 'addWaypoint', 'updateWaypoint', 'removeWaypoint', 'setSnap']);
 
   async function fetchNetwork(url) {
@@ -48,7 +49,7 @@
   function RouteBackend(post) {
     let net = null, router = null, editor = null, changed = false;
     const settings = { profile: 'roads', pcnFactor: 0.8, avoidClosures: true };
-    const state = () => ({ coords: editor.coords, wps: editor.wps, canUndo: editor.canUndo(), canRedo: editor.canRedo(), snap: editor.snap });
+    const state = () => ({ coords: editor.coords, wps: editor.wps, canUndo: editor.canUndo(), canRedo: editor.canRedo(), snap: editor.snap, finish: editor.finish, base: editor.finish ? editor.base : null });
     function apply(s) {
       Object.assign(settings, s);
       if (!router) return;
@@ -85,6 +86,9 @@
             if (m.op === 'setSnap') { editor.snap = !!m.args[0]; result = { ok: true }; } else result = editor[m.op](...(m.args || []));
           } catch (e) { result = { ok: false, msg: 'Something went wrong with that edit. ' + e.message }; }
           post({ t: 'state', id: m.id, result, changed, state: editor ? state() : null });
+        } else if (m.t === 'cues') {   // turn-by-turn for the current route
+          const c = editor && editor.coords.length > 1 ? editor.coords : [];
+          post({ t: 'cues', id: m.id, coords: c, cues: c.length ? RE.turnCues(net, c, { turnaround: editor.finish === 'outback' ? editor.baseDistance : 0 }) : [] });
         } else if (m.t === 'path') {
           post({ t: 'path', id: m.id, coords: router ? router.path(m.a, m.b) : null });
         }

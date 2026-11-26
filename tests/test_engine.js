@@ -75,6 +75,92 @@ ed.removeWaypoint(id); ok(ed.wps.length === 0, 'waypoint remove');
 ed.snap = false; const Lf = ed.distance; ed.addPoint(1.3440, 103.8600); ok(ed.coords.length > 1 && Math.abs(ed.distance - Lf - D(ed.coords[ed.coords.length - 2], ed.end)) < 1e-6, 'snap off: tap adds a straight line'); ed.snap = true;
 ok(ed.clear().ok && ed.coords.length === 0 && ed.undo().ok && ed.coords.length > 0, 'clear + undo');
 
+// 2b) out & back and loop stay removable, and editable after closing the route
+{
+  const f = new E.RouteEditor(router);
+  f.addPoint(...A); f.addPoint(...B); const base = f.coords.slice(), Lb = f.distance;
+  ok(f.outAndBack().ok && f.finish === 'outback' && Math.abs(f.distance - 2 * Lb) < 1 && Math.abs(f.baseDistance - Lb) < 1e-6, `out & back doubles the route: ${(f.distance / 1000).toFixed(3)} km`);
+  ok(f.addPoint(...C).ok && f.finish === 'outback' && f.baseDistance > Lb + 500 && Math.abs(f.distance - 2 * f.baseDistance) < 1, `a tap after out & back extends the way out and the way back follows: ${(f.baseDistance / 1000).toFixed(3)} km out`);
+  const end = f.coords[f.coords.length - 1];
+  ok(D(end, f.coords[0]) < 1, 'the out & back still ends at the start');
+  ok(f.outAndBack().ok && f.finish === null && Math.abs(f.distance - f.baseDistance) < 1e-6, 'out & back again takes it off');
+  ok(f.undo().ok && f.finish === 'outback', 'undo puts it back');
+  ok(f.removeFinish().ok && !f.finish && D(f.end, C) < 80, 'removeFinish leaves the route ending at the last tap');
+  ok(f.closeLoop().ok && f.finish === 'loop' && D(f.end, f.start) < 1 && f.distance > f.baseDistance + 300, `loop adds the way back to the start: ${(f.distance / 1000).toFixed(3)} km`);
+  ok(f.outAndBack().ok && f.finish === 'outback', 'choosing out & back while looped switches to out & back');
+  ok(f.closeLoop().ok && f.finish === 'loop', 'and back to the loop');
+  const wp = f.addWaypoint(...B, 'Water'); ok(wp.ok && f.finish === 'loop' && f.wps.length === 1, 'adding a waypoint keeps the loop');
+  // erase on the way back of a loop: explain instead of failing silently
+  const backLeg = f.coords.slice(Math.floor(f.coords.length * 0.97)), mid = backLeg[Math.floor(backLeg.length / 2)];
+  const er = f.erase([mid], 15);
+  ok(er.ok || /way back to the start/.test(er.msg || ''), `eraser on the way back: ${er.ok ? 'erased from the drawn route' : er.msg}`);
+  const g = new E.RouteEditor(router); g.load(base, [], 'outback');
+  ok(g.finish === 'outback' && Math.abs(g.distance - 2 * Lb) < 1, 'load with a finish puts it back on');
+  const t = new E.RouteEditor(router); t.load(base, [], 'outback');
+  ok(t.trim(1000).ok && Math.abs(t.baseDistance - 1000) < 1 && Math.abs(t.distance - 2000) < 1, 'trim under an out & back trims the way out: 1 km out, 2 km in all');
+}
+
+// 2c) turn-by-turn: cues from the network, and following progress from GPS-like fixes
+{
+  const g = new E.RouteEditor(router); g.addPoint(...A); g.addPoint(...B); g.addPoint(...C);
+  const cs = g.coords, Lr = g.distance, cues = E.turnCues(net, cs);
+  const turns = cues.filter(c => c.type !== 'depart' && c.type !== 'arrive');
+  ok(cues[0].type === 'depart' && cues[cues.length - 1].type === 'arrive' && Math.abs(cues[cues.length - 1].d - Lr) < 10,
+    `cues start with a heading and end with the arrival: ${cues.length} cues on ${(Lr / 1000).toFixed(2)} km`);
+  ok(cues.every((c, i) => i === 0 || c.d >= cues[i - 1].d) && cues.every(c => typeof c.text === 'string' && c.text && !/undefined|null/.test(c.text)),
+    'cues are in order along the route and every one has wording');
+  ok(turns.length >= 1 && turns.every(c => c.d > 30 && c.d < Lr - 30), `${turns.length} turns, none in the first or last 30 m: ${turns.slice(0, 3).map(c => c.text).join(' / ')}`);
+  // out & back: one "turn around" at the far end, no turns piled up there
+  const o = new E.RouteEditor(router); o.addPoint(...A); o.addPoint(...B); o.outAndBack();
+  const oc = E.turnCues(net, o.coords, { turnaround: o.baseDistance });
+  const ut = oc.filter(c => c.type === 'uturn'), nearEnd = oc.filter(c => Math.abs(c.d - o.baseDistance) < 45);
+  ok(ut.length === 1 && Math.abs(ut[0].d - o.baseDistance) < 10 && nearEnd.length === 1, `out & back: one turn around at ${(ut[0] ? ut[0].d / 1000 : 0).toFixed(2)} km, ${nearEnd.length} cue(s) within 45 m of it`);
+  ok(/back at the start/.test(oc[oc.length - 1].text), `out & back arrival: "${oc[oc.length - 1].text}"`);
+
+  // follow the out & back with noisy fixes every ~12 m: progress never goes back, the way home is not
+  // mistaken for the way out, and it finishes
+  for (const sigma of [5, 15]) {
+    const tr = new E.RouteTracker(o.coords, oc), pts = resample(o.coords, 12);
+    let prev = -1, back = true, mono = true, last = null, offs = 0, lag = 0;
+    const cum = E.geo.cumul(pts);
+    pts.forEach((p, k) => {
+      const r = tr.update(p[0] + gauss() * sigma / 110574, p[1] + gauss() * sigma / 111300, Math.max(8, sigma));
+      if (r.along < prev) mono = false; prev = r.along; last = r;
+      if (r.status === 'off') offs++;
+      lag = Math.max(lag, cum[k] - r.along);
+      if (cum[k] > o.baseDistance + 200 && r.along < o.baseDistance) back = false;   // on the way home but placed on the way out
+    });
+    ok(mono && back && last.status === 'done' && offs === 0 && lag < 120, `tracker, GPS noise ${sigma} m: forward only ${mono}, home leg recognised ${back}, ${last.status}, ${offs} off fixes; worst lag ${lag.toFixed(0)} m`);
+  }
+  // before the start, off the route, and the distance to the next turn
+  const tr = new E.RouteTracker(cs, cues);
+  const far = tr.update(cs[0][0] + 0.003, cs[0][1], 10);
+  ok(far.status === 'to-start' && far.dist > 250 && far.dist < 400 && (far.bearing > 135 && far.bearing < 225), `away from the start: head ${far.bearing.toFixed(0)}° for ${far.dist.toFixed(0)} m`);
+  const cum = E.geo.cumul(cs), at = (d) => E.geo.pointAt(cs, cum, d);
+  for (let d = 0; d <= 600; d += 15) tr.update(...at(d), 8);
+  const on = tr.update(...at(615), 8), nx = cues.find(c => c.d > on.along - 10);
+  ok(on.status === 'on' && Math.abs(on.along - 615) < 25 && nx && on.next === nx && Math.abs(on.toNext - Math.max(0, nx.d - on.along)) < 1e-6, `on route at ${on.along.toFixed(0)} m; next: "${on.next && on.next.text}" in ${on.toNext.toFixed(0)} m`);
+  const side = (d, m) => { const p = at(d), q = at(d + 5), dx = (q[1] - p[1]) * 111300, dy = (q[0] - p[0]) * 110574, n = Math.hypot(dx, dy); return [p[0] + (dx / n) * m / 110574, p[1] - (dy / n) * m / 111300]; };
+  const o1 = tr.update(...side(630, 150), 10), o2 = tr.update(...side(640, 150), 10), o3 = tr.update(...side(650, 150), 10);
+  ok(o1.status === 'on' && o2.status === 'on' && o3.status === 'off' && o3.dist > 100 && Math.abs(o3.along - on.along) < 1, `150 m off the route: "off" after three fixes, ${o3.dist.toFixed(0)} m away, progress held`);
+  const back2 = tr.update(...at(660), 10);
+  ok(back2.status === 'on' && back2.along >= on.along, 'back on the route: "on" again');
+  // three fixes well ahead on new ground: a short cut, believed on the third
+  const j1 = tr.update(...at(2400), 10), j2 = tr.update(...at(2405), 10), j3 = tr.update(...at(2410), 10);
+  ok(j1.along < 1000 && j2.along < 1000 && Math.abs(j3.along - 2410) < 25, `short cut ahead taken after three fixes: ${j1.along.toFixed(0)} -> ${j3.along.toFixed(0)} m`);
+  // out & back: fixes behind the progress must not "jump" to the same ground on the way back
+  const ob = new E.RouteTracker(o.coords, oc), oCum = E.geo.cumul(o.coords), oAt = (d) => E.geo.pointAt(o.coords, oCum, d);
+  for (let d = 0; d <= 600; d += 10) ob.update(...oAt(d), 8);
+  let r3; for (const d of [450, 445, 440, 435]) r3 = ob.update(...oAt(d), 8);
+  ok(r3.along < 700, `fixes 150 m behind on an out & back: progress stays at ${r3.along.toFixed(0)} m (no jump onto the way back)`);
+  // the phone's heading tells the way back from the way out right after the turnaround
+  const Tb = o.baseDistance, hb = (d, back) => { const p = oAt(d), q = oAt(d + 5); const t = Math.PI / 180; const y = Math.sin((q[1] - p[1]) * t), x = (q[0] - p[0]); return ((Math.atan2(y * Math.cos(p[0] * t), x * t) / t) + 360 + (back ? 180 : 0)) % 360; };
+  const h1 = new E.RouteTracker(o.coords, oc), h2 = new E.RouteTracker(o.coords, oc);
+  for (let d = 0; d <= Tb; d += 10) { h1.update(...oAt(d), 8, hb(d, false)); h2.update(...oAt(d), 8); }
+  let a1, a2; for (let s2 = 10; s2 <= 60; s2 += 10) { a1 = h1.update(...oAt(Tb + s2), 8, hb(Tb + s2, false)); a2 = h2.update(...oAt(Tb + s2), 8); }
+  ok(a1.along > Tb + 30 && a1.along >= a2.along, `60 m after the turnaround: ${(a1.along - Tb).toFixed(0)} m past it with the heading, ${(a2.along - Tb).toFixed(0)} m without`);
+}
+
 // 3) codecs and elevation maths
 const enc = E.decode(E.encode(outbound)); ok(maxDev(enc, outbound) < 1.5, `polyline codec round trip (max ${maxDev(enc, outbound).toFixed(2)} m)`);
 const sh = E.fromShare(E.toShare(outbound, [{ lat: 1.35, lon: 103.85, title: 'Café ☕' }]));

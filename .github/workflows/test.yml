@@ -66,3 +66,11 @@ jobs:
 
       - name: Browser tests (moving the map while drawing, desktop + touch)
         run: python tests/pan_while_drawing.py
+
+      - name: Browser tests (Start - turn-by-turn, off-route, OpenStreetMap layer; taking a finish off)
+        run: |
+          python tests/navigate.py
+          if [ -f /tmp/net-v3.bin.gz ]; then
+            NET_FILE=/tmp/net-v3.bin.gz python tests/navigate.py                 # cues from the footpath network
+            NET_FILE=/tmp/net-v3.bin.gz ENGINE=inline python tests/navigate.py   # engine in the page
+          fi

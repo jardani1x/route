@@ -59,14 +59,14 @@ have an OSM way within 12 m and 89.8% are marked as park connectors.
 | Route editing: eraser, trace over a section to replace it | Eraser (E) trims ends or removes a middle stretch and reconnects; tracing between two route points replaces that section |
 | Undo / redo / clear | Buttons, Ctrl+Z, Ctrl+Shift+Z |
 | Move the map while drawing | Right-drag (or middle-drag), or hold Space and drag; two fingers to pan and pinch on touch screens (one finger keeps drawing) |
-| Finish route | Out & back, close loop, reverse, trim to a distance |
+| Finish route | Out & back, close loop, reverse, trim to a distance. Out & back and loop stay editable: taps, traces and the eraser change the way out and the way back follows; tap the same choice again (or "Take it off" under the stats) to remove it |
 | Measure distance | km or miles, distance markers, time from your pace per activity |
 | Elevation chart during planning | Open-Meteo elevation (Copernicus 90 m surface model), smoothed over ~270 m so roofs and trees are not counted as climb; hover the chart to see the spot on the map. Fetched once per ~44 m grid cell and kept between visits, so an edit only asks about new ground; if Open-Meteo says it is busy (HTTP 429), the app waits and retries, then tries again after 30 s |
 | Route waypoints | Waypoint tool (K): name + notes, draggable, exported to GPX |
 | Save routes / sync | Saved in this browser (localStorage); sync across devices is planned |
 | Share routes | "Copy share link" encodes the route in the URL |
 | Import GPX | Button or drag-and-drop |
-| Basic street & satellite maps | OneMap street, Esri satellite, plus a built-in offline map |
+| Basic street & satellite maps | OneMap street, OpenStreetMap, Esri satellite, plus a built-in offline map |
 | Search | Streets and park connectors offline; OneMap address search online |
 | Show my location | One-off locate (needs HTTPS) |
 
@@ -76,9 +76,32 @@ Closures: `closures.json` lists known closures with start and end dates. Active 
 dashed red, the planner warns when a route goes through one, and "Route around closures"
 (on by default) keeps new routes out of them.
 
-Not built yet (Footpath Elite or beyond Basic): cue sheets, turn-by-turn voice navigation, live GPS
-tracking along the route, lists/folders, merge/duplicate/split routes, slope colouring,
-3D terrain, offline tile downloads, PDF printing, activity logging, watch sync.
+Also included although Footpath charges for it (Elite): turn-by-turn directions with voice while you
+follow a route (see below).
+
+Not built yet (Footpath Elite or beyond Basic): printable cue sheets, lists/folders,
+merge/duplicate/split routes, slope colouring, 3D terrain, offline tile downloads, PDF printing,
+activity logging, watch sync.
+
+## Following a route (Start)
+
+**Start** (under the distance) follows the route with turn-by-turn directions. The top panel shows the
+next turn, the metres to it and the street it is on, then the turn after it when that comes soon; the
+bottom panel shows distance done and to go and the time. The route already covered turns grey and the
+map follows you (drag it to look around, **Re-centre** to follow again). Before you reach the start it
+points you there; more than about 35 m away from the route for three fixes in a row, it says "Off the
+route" and which way the nearest part is. **Voice** speaks each turn 150 m and 30 m before it (and buzzes
+on phones that can), **Simulate** runs along the route at 8 times your pace so you can try it at home,
+**Stop** goes back to planning. The layers button stays available, so you can switch to OpenStreetMap
+(or satellite) while you run. Editing is off while following.
+
+Directions come from the walk network: street names, and for a pavement or crossing the name of the
+road beside it; unnamed paths just say "turn left". On an out & back it says "Turn around" at the far
+end. Where the route uses the same path twice (an out & back, a spur), it takes the earlier pass until
+you are clearly past it, and uses the phone's direction of travel when the phone gives one.
+
+Needs location permission and HTTPS (GitHub Pages is). The screen is kept on while following where the
+browser supports it.
 
 ## 3D view
 
@@ -119,7 +142,7 @@ Measured in Chrome with its CPU slowed down 4x on a desktop (not a real phone), 
 | `index.html` | Layout and styles |
 | `app.js` | UI: map, tools, pointer input, stats, search, storage, import/export; talks to the engine by messages |
 | `worker.js`, `backend.js` | The route engine's home: loads the network, runs the editor, answers edits |
-| `engine.js` | Route editing: trace matching, eraser, replace, finish actions, undo/redo, share codec |
+| `engine.js` | Route editing: trace matching, eraser, replace, finish actions, undo/redo, share codec; turn cues and progress along a route while following it |
 | `view3d.js` | The 3D view (MapLibre GL JS + OpenFreeMap) |
 | `vendor/maplibre/` | MapLibre GL JS 5.24.1 (BSD 3-Clause, `LICENSE.txt`), loaded on first use of the 3D view |
 | `core.js` | Network loading (binary run-net-3, JSON run-net-1/2), spatial grid, snapping, A* routing with the two profiles, GPX helpers |
@@ -147,6 +170,17 @@ Measured in Chrome with its CPU slowed down 4x on a desktop (not a real phone), 
 - Elevation uses a 90 m terrain model: good for trends, not for exact climb on short hills.
 - Esri imagery comes with its own terms of use. For heavy use, switch `config.js` to a tile
   provider you have a key for.
+- OpenStreetMap's own tiles are for light use: the page asks only for what is on screen, sends the
+  Referer the policy asks for and shows the credit, but OSM may block any site whose traffic grows
+  heavy, and offline use is not allowed
+  ([tile usage policy](https://operations.osmfoundation.org/policies/tiles/)). If many people use the
+  site, point `config.js` at a provider you have an agreement with.
+- Browsers only give a web page your location while the page is on screen. If the screen locks or you
+  switch apps, directions pause and catch up when you come back (a native app like Footpath can keep
+  tracking in the background). Keep the page open while running; the screen is kept awake if the
+  browser allows it.
+- Directions depend on the map data: where OSM has a path the route does not really use, or misses a
+  junction, a turn can be called a little early, late or not at all.
 
 ## Data and licences
 
@@ -156,7 +190,7 @@ licence (`LICENSE-LEAFLET`); `vendor/maplibre/` is MapLibre GL JS 5.24.1 under i
 - Streets and paths: © OpenStreetMap contributors, ODbL.
 - Park connectors: NParks, Singapore Open Data Licence (via data.gov.sg).
 - Land boundary: URA Master Plan 2019 Region Boundary (No Sea), Singapore Open Data Licence (via data.gov.sg).
-- Basemaps: OneMap © Singapore Land Authority; © OpenStreetMap; imagery © Esri.
+- Basemaps: OneMap © Singapore Land Authority; OpenStreetMap tiles © OpenStreetMap contributors; imagery © Esri.
 - Elevation: Copernicus DEM GLO-90 via Open-Meteo (CC BY 4.0).
 - 3D view: OpenFreeMap © OpenMapTiles, data from OpenStreetMap.
 
@@ -174,5 +208,9 @@ hand-made OSM file and checks the binary reads back as the same network.
 plus every editor operation and the codecs. `tests/smoke.py` (Playwright, with the site served on port 8766) drives the page:
 draw, tap, erase, undo/redo, out & back, waypoints, save, export → import, share link, search,
 the offline-tile fallback, and the online basemap path with stubbed tile and elevation servers.
+`tests/navigate.py` (Playwright, browser location set by the test) checks Start: the panel before the
+start, the next turn and metres to it, off-route, no editing while following, OpenStreetMap tiles with a
+Referer and the credit visible, Simulate, arrival, Stop, the phone layout; and that an out & back can be
+taken off and extended. `tests/test_engine.js` also follows noisy GPS-like fixes along an out & back.
 `tests/pan_while_drawing.py` (Playwright) checks right-drag and Space-drag panning in Draw mode on desktop,
 and one-finger drawing, two-finger pan, pinch-zoom and stroke-then-second-finger on a touch screen.
