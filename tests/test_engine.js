@@ -159,6 +159,20 @@ ok(ed.clear().ok && ed.coords.length === 0 && ed.undo().ok && ed.coords.length >
   for (let d = 0; d <= Tb; d += 10) { h1.update(...oAt(d), 8, hb(d, false)); h2.update(...oAt(d), 8); }
   let a1, a2; for (let s2 = 10; s2 <= 60; s2 += 10) { a1 = h1.update(...oAt(Tb + s2), 8, hb(Tb + s2, false)); a2 = h2.update(...oAt(Tb + s2), 8); }
   ok(a1.along > Tb + 30 && a1.along >= a2.along, `60 m after the turnaround: ${(a1.along - Tb).toFixed(0)} m past it with the heading, ${(a2.along - Tb).toFixed(0)} m without`);
+  // fixes that come seldom (every 15 s at 4 m/s): the step grows with the time between them
+  const sl = new E.RouteTracker(o.coords, oc); let tt = 0, lagT = 0, lagN = 0;
+  for (let d = 0; d <= 1500; d += 60) { tt += 15000; lagT = Math.max(lagT, d - sl.update(...oAt(d), 8, null, tt).along); }
+  const sn = new E.RouteTracker(o.coords, oc); for (let d = 0; d <= 1500; d += 60) lagN = Math.max(lagN, d - sn.update(...oAt(d), 8).along);
+  ok(lagT < 80 && lagN > 300, `a fix every 15 s: worst lag ${lagT.toFixed(0)} m with timestamps (${lagN.toFixed(0)} m without)`);
+  // the screen was off for 10 minutes on the way out, and comes back on the way home (no phone heading):
+  // it waits for the direction of travel, then picks the way home
+  for (const [label, d0] of [['on the way home', 2 * Tb - 800], ['further out', Tb - 300]]) {
+    const gp = new E.RouteTracker(o.coords, oc); let tg = 0;
+    for (let d = 0; d <= 500; d += 4) { tg += 1000; gp.update(...oAt(d), 6, null, tg); }
+    tg += 600000; let k = 0, rg;
+    for (let d = d0; k < 25; d += 4, k++) { tg += 1000; rg = gp.update(...oAt(d), 6, null, tg); }
+    ok(Math.abs(rg.along - (d0 + 96)) < 30 && rg.status === 'on', `screen off 10 min, back ${label}: progress ${rg.along.toFixed(0)} m (actual ${(d0 + 96).toFixed(0)} m)`);
+  }
 }
 
 // 3) codecs and elevation maths

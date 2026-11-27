@@ -68,7 +68,7 @@ have an OSM way within 12 m and 89.8% are marked as park connectors.
 | Import GPX | Button or drag-and-drop |
 | Basic street & satellite maps | OneMap street, OpenStreetMap, Esri satellite, plus a built-in offline map |
 | Search | Streets and park connectors offline; OneMap address search online |
-| Show my location | One-off locate (needs HTTPS) |
+| Show my location | Live: the location button shows a dot that moves with you and keeps it in view; move the map to look elsewhere, tap to follow again, tap once more to stop |
 
 Also included although Footpath charges for it: GPX export.
 
@@ -101,7 +101,13 @@ end. Where the route uses the same path twice (an out & back, a spur), it takes 
 you are clearly past it, and uses the phone's direction of travel when the phone gives one.
 
 Needs location permission and HTTPS (GitHub Pages is). The screen is kept on while following where the
-browser supports it.
+browser supports it. Under the stats it shows how good and how fresh the location is ("GPS ±6 m", or "no
+update for 20 s"); if updates stop, the page starts the location watch again by itself, and again whenever
+you come back to the page.
+
+**If the dot does not move on an iPhone**: the phone may be giving Safari only an approximate location
+(the page then says so, with the accuracy in km). Turn it on in Settings > Privacy & Security > Location
+Services > Safari Websites: While Using the App, and Precise Location on.
 
 ## 3D view
 

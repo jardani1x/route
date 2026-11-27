@@ -667,35 +667,67 @@
       for (const c of cand) if (c.e <= be + 12) return i0 + c.k;
       return -1;
     }
-    /** heading: degrees from the phone (coords.heading) while moving, else null. */
-    update(lat, lon, accuracy = 10, heading = null) {
+    /** The direction of travel from the fixes themselves, for phones that give no heading: the mean of the
+     *  older half of the recent fixes to the mean of the newer half (averaging takes out most of the
+     *  scatter), once they are max(20 m, 1.5x accuracy) apart; else null. */
+    _ownHeading(accuracy) {
+      const h = this.hist, n = h.length; if (n < 8) return null;
+      const mean = (a) => [a.reduce((s, q) => s + q[0], 0) / a.length, a.reduce((s, q) => s + q[1], 0) / a.length];
+      const a = mean(h.slice(0, n >> 1)), b = mean(h.slice(n >> 1));
+      return D(a, b) >= Math.max(20, 1.5 * (accuracy || 12)) ? bearingOf(a, b) : null;
+    }
+    /** heading: degrees from the phone (coords.heading) while moving, else null.
+     *  time: the fix's timestamp in ms (optional). The step allowed per fix grows with the time since the
+     *  last one (8 m/s plus 20 m, at least 40 m), so fixes that come seldom still keep up. After a gap of
+     *  more than 30 s (the screen was off), progress waits for a direction of travel before it re-joins, so
+     *  the way home of an out & back is not mistaken for the way out. */
+    update(lat, lon, accuracy = 10, heading = null, time = null) {
+      const hasT = Number.isFinite(time);
+      const dt = hasT && Number.isFinite(this.lastT) ? Math.max(0, (time - this.lastT) / 1000) : 1;
+      if (hasT) this.lastT = time;
+      const p = [lat, lon];
+      if (!this.hist) this.hist = [];
+      if (dt > 30) { this.hist = []; if (this.along !== null) this.rejoin = { t0: time - dt * 1000, n: 0 }; }
+      this.hist.push(p); if (this.hist.length > 16) this.hist.shift();
+      // the heading from the fixes is noisy (at a U-turn it still points the old way for a while), so it
+      // is only used to choose the way when re-joining after a gap; the phone's own heading is used always
+      const phoneHd = Number.isFinite(heading) ? heading : null;
+      const hd = this.rejoin && phoneHd === null ? this._ownHeading(accuracy) : phoneHd;
+      let step = Math.max(40, 8 * dt + 20);
+      if (this.rejoin) step = Math.max(step, 8 * (time - this.rejoin.t0) / 1000 + 20);
+      const ahead = Math.max(300, step + 100);
       // a fix counts as on the route within 2.5x its reported accuracy (35-60 m): phones under-report the
       // error between tall blocks, and a false "off route" every few minutes is worse than a late one
-      const p = [lat, lon], tol = Math.max(35, Math.min(2.5 * (accuracy || 12), 60));
-      let i = -1;
-      if (this.along === null) i = this._match(p, 0, this.L, tol, heading, false);      // joining: the earliest place the route passes here
+      const tol = Math.max(35, Math.min(2.5 * (accuracy || 12), 60));
+      let i = -1, waiting = false;
+      if (this.along === null) i = this._match(p, 0, this.L, tol, hd, false);      // joining: the earliest place the route passes here
+      else if (this.rejoin && !Number.isFinite(hd) && this.rejoin.n < 20) { this.rejoin.n++; waiting = true; }   // which way? wait up to 20 fixes
       else {
         // GPS noise can put a fix a little behind the progress so far: matching there counts as on route
-        i = this._match(p, this.along - 40, this.along + 300, tol, heading, true);
+        i = this._match(p, this.along - 40, this.along + ahead, tol, hd, !this.rejoin);
+        this.rejoin = null;
         if (i >= 0) this.jump = null;
-        else {   // a short cut further along: believe it after three fixes in a row agree, and only if that
-          // ground is new (where the route comes back over ground already covered, it is not a short cut)
-          const g = this._match(p, this.along + 300, this.L, tol, heading, false);
-          if (g < 0 || this.cum[this.first[g]] <= this.along + 300) this.jump = null;
+        else {   // a short cut further along: believe it after three fixes in a row agree if that ground is
+          // new. Where the route comes back over ground already covered, it takes eight fixes in a row.
+          const g = this._match(p, this.along + ahead, this.L, tol, hd, false);
+          if (g < 0) this.jump = null;
           else {
+            const covered = this.cum[this.first[g]] <= this.along + ahead;
             this.jump = this.jump && Math.abs(this.cum[g] - this.jump.d) < 80 ? { d: this.cum[g], n: this.jump.n + 1 } : { d: this.cum[g], n: 1 };
-            if (this.jump.n >= 3) { i = g; this.jump = null; }
+            if (this.jump.n >= (covered ? 8 : 3)) { i = g; this.jump = null; }
           }
         }
       }
-      if (i >= 0) {   // forward only, and no more than 40 m per fix unless it was a confirmed short cut
-        const a = this.along === null ? this.cum[i] : Math.max(this.along, Math.min(this.cum[i], this.cum[i] - this.along > 300 ? this.cum[i] : this.along + 40));
+      if (i >= 0) {   // forward only, and no more than one step per fix unless it was a confirmed short cut
+        const a = this.along === null ? this.cum[i] : Math.max(this.along, Math.min(this.cum[i], this.cum[i] - this.along > ahead ? this.cum[i] : this.along + step));
         this.along = a; this.offCount = 0;
       }
       const out = { along: this.along || 0, left: this.L - (this.along || 0), L: this.L };
       if (this.along === null) {
         const s = this.pts[0], n = this._nearest(p, 0, this.L);
         Object.assign(out, { status: 'to-start', dist: D(p, s), bearing: bearingOf(p, s), nearestDist: n.dist });
+      } else if (waiting) {
+        Object.assign(out, { status: 'on', dist: 0, bearing: 0 });
       } else if (i < 0) {
         this.offCount++;
         const n = this._nearest(p, this.along - 50, this.along + 500), q = n.i >= 0 ? this.pts[n.i] : this.pts[0];

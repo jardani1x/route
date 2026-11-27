@@ -671,6 +671,50 @@
   }
   $('#view3dBtn').addEventListener('click', () => set3d(!in3d));
 
+  // ---------------- live location: one watch shared by the location button and Start ----------------
+  // A watch can go quiet: after a timeout, after the page was in the background, or when the phone hands
+  // the page only an approximate location (iPhone "Precise Location" off), which hardly ever changes.
+  // So: a watchdog starts the watch again when no fix has come for 12 s while the page is on screen; the
+  // watch is started again whenever the page comes back on screen; an approximate location is shown with
+  // how to turn on the precise one.
+  const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const PRECISE_HELP = IOS ? 'On iPhone: Settings > Privacy & Security > Location Services > Safari Websites: While Using the App, and turn on Precise Location.'
+    : 'Turn on precise (high accuracy) location for this browser in your phone\'s settings.';
+  const ALLOW_HELP = IOS ? 'On iPhone: Settings > Privacy & Security > Location Services on, Safari Websites: While Using the App (or Ask); then reload this page and allow location.'
+    : 'Allow location for this site in the browser\'s site settings, then reload the page.';
+  const loc = {
+    watch: null, users: new Set(), subs: new Set(), last: null, error: null, dog: 0, since: 0, restarts: 0, stallMs: 12000,
+    start(user, fn) { if (fn) this.subs.add(fn); this.users.add(user); if (this.watch === null) this._begin(); },
+    stop(user, fn) { if (fn) this.subs.delete(fn); this.users.delete(user); if (!this.users.size) this._end(); },
+    get approx() { return !!this.last && this.last.acc > 500; },
+    _begin() {
+      if (!navigator.geolocation) { this.error = { code: 0 }; this._emit(); return; }
+      this.since = Date.now(); this.error = null; this.heard = false;   // heard: a fix or an error since this watch began
+      this.watch = navigator.geolocation.watchPosition((p) => this._fix(p), (e) => this._err(e), { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+      clearInterval(this.dog); this.dog = setInterval(() => this._check(), 3000);
+    },
+    _end() { if (this.watch !== null) navigator.geolocation.clearWatch(this.watch); this.watch = null; clearInterval(this.dog); },
+    restart() { if (this.watch === null) return; navigator.geolocation.clearWatch(this.watch); this.watch = null; this.restarts++; this._begin(); },
+    _check() {
+      // nothing heard yet may mean the permission prompt is still open: do not start the watch over it
+      if (this.watch === null || !this.heard || document.visibilityState !== 'visible') return;
+      if (Date.now() - Math.max(this.last ? this.last.at : 0, this.since) > this.stallMs) this.restart();
+    },
+    _fix(p) {
+      const c = p.coords, moving = Number.isFinite(c.heading) && Number.isFinite(c.speed) && c.speed > 0.8;
+      this.last = { lat: c.latitude, lon: c.longitude, acc: c.accuracy || 0, heading: moving ? c.heading : null, t: Date.now(), at: Date.now() };
+      this.error = null; this.heard = true; this._emit();
+    },
+    _err(e) { this.error = e; this.heard = true; if (e.code === 1) this._end(); this._emit(); },
+    _emit() { for (const f of this.subs) { try { f(this.last, this.error); } catch (e) { console.error(e); } } },
+  };
+  // back on screen: start the watch again (it may have gone quiet; or location may have been allowed meanwhile)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !loc.users.size) return;
+    if (loc.watch === null) loc._begin(); else if (loc.heard) loc.restart();
+  });
+  const accText = (m) => (m >= 1000 ? `±${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `±${Math.round(m)} m`);
+
   // ---------------- follow the route: turn-by-turn ----------------
   // Start: the page asks for the location (or simulates a runner), RouteTracker (engine.js) works out the
   // progress along the route, and the panel shows the next turn and the metres to it, with an optional
@@ -736,15 +780,18 @@
   }
   /** heading: the phone's direction of travel (degrees) while moving, or null; it tells the way out of an
    *  out & back from the way home where both use the same path. */
-  function onFix(lat, lon, acc, heading = null) {
-    if (!nav.on) return;
-    const o = nav.tracker.update(lat, lon, acc, heading);
-    if (nav.firstAlong === undefined && o.status !== 'to-start') nav.firstAlong = o.along;
-    nav.last = o;
+  function placeMe(lat, lon, acc) {
     if (!nav.me) {
       nav.acc = L.circle([lat, lon], { pane: 'nav', radius: acc || 10, color: '#2563eb', weight: 1, fillOpacity: .12, interactive: false }).addTo(nav.layer);
       nav.me = L.circleMarker([lat, lon], { pane: 'nav', radius: 8, color: '#ffffff', weight: 3, fillColor: '#2563eb', fillOpacity: 1, interactive: false }).addTo(nav.layer);
     } else { nav.me.setLatLng([lat, lon]); nav.acc.setLatLng([lat, lon]).setRadius(acc || 10); }
+  }
+  function onFix(lat, lon, acc, heading = null, time = null) {
+    if (!nav.on) return;
+    const o = nav.tracker.update(lat, lon, acc, heading, time);
+    if (nav.firstAlong === undefined && o.status !== 'to-start') nav.firstAlong = o.along;
+    nav.last = o;
+    placeMe(lat, lon, acc);
     nav.doneLine.setLatLngs(o.along > 0 ? RE.geo.slice(nav.coords, 0, o.along) : []);
     // follow by panning only: the zoom is the runner's to choose, and Leaflet drops a setView that arrives
     // during a zoom animation (a late fix would then leave the map behind)
@@ -753,20 +800,40 @@
     if (o.status === 'done') stopTracking();
   }
   function stopTracking() {
-    if (nav.watch !== null) { navigator.geolocation.clearWatch(nav.watch); nav.watch = null; }
+    loc.stop('nav', navLoc);
     if (nav.sim) { clearInterval(nav.sim); nav.sim = null; $('#navSim').setAttribute('aria-pressed', 'false'); }
   }
-  function startGps() {
-    if (!navigator.geolocation) { $('#navText').textContent = 'This browser cannot tell the page where you are. Press Simulate to try the directions.'; return; }
-    nav.watch = navigator.geolocation.watchPosition((p) => {
-      if (nav.sim) return;
-      const c = p.coords, moving = Number.isFinite(c.heading) && Number.isFinite(c.speed) && c.speed > 0.8;
-      onFix(c.latitude, c.longitude, c.accuracy, moving ? c.heading : null);
-    }, (err) => {
-      if (err.code === 1) { $('#navText').textContent = 'Location is off for this page. Allow it in the browser settings, or press Simulate.'; stopTracking(); }
-      else $('#navText').textContent = 'Waiting for GPS…';
-    }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 });
+  /** Fixes from the shared watch. A fix worse than 150 m moves the dot but not the progress. */
+  function navLoc(f, err) {
+    if (!nav.on || nav.sim) return;
+    if (err) {
+      if (err.code === 1 || err.code === 0) { $('#navWarn').hidden = false; $('#navWarn').textContent = err.code ? `Location is off for this page. ${ALLOW_HELP}` : 'This browser cannot give the page your location. Press Simulate to try the directions.'; }
+      else if (!nav.last) $('#navText').textContent = 'Waiting for GPS…';
+      gpsLine(); return;
+    }
+    if (!f || f === nav.fix) return;
+    nav.fix = f;
+    if (f.acc > 150) {
+      placeMe(f.lat, f.lon, f.acc); if (nav.follow) map.panTo([f.lat, f.lon]);
+      $('#navWarn').hidden = false;
+      $('#navWarn').textContent = f.acc > 500 ? `Your phone is giving this page only an approximate location (${accText(f.acc)}), so it cannot follow you. ${PRECISE_HELP}` : `Weak GPS (${accText(f.acc)}): waiting for a better fix.`;
+      gpsLine(); return;
+    }
+    onFix(f.lat, f.lon, f.acc, f.heading, f.t); gpsLine();
   }
+  /** Under the stats: how fresh and how good the location is. */
+  function gpsLine() {
+    const el = $('#navGps'); if (!el) return;
+    if (nav.sim) { el.textContent = 'Simulating a runner'; el.className = 'navgps'; return; }
+    const f = loc.last, age = f ? (Date.now() - f.at) / 1000 : Infinity;
+    let t, bad = false;
+    if (loc.error && loc.error.code === 1) { t = 'Location: not allowed'; bad = true; }
+    else if (!f || f.at < nav.t0 - 10000) { t = 'Location: waiting for GPS…'; bad = age > 20; }
+    else if (age > 10) { t = `Location: no update for ${Math.round(age)} s`; bad = true; }
+    else { t = `GPS ${accText(f.acc)}`; bad = f.acc > 150; }
+    el.textContent = t; el.className = bad ? 'navgps bad' : 'navgps';
+  }
+  function startGps() { loc.start('nav', navLoc); if (loc.last && Date.now() - loc.last.at < 5000) navLoc(loc.last, null); }
   async function keepAwake() {
     try {
       if (!('wakeLock' in navigator)) return;
@@ -787,8 +854,8 @@
     if (map._animatingZoom) await new Promise((r) => { map.once('zoomend', r); setTimeout(r, 600); });   // Leaflet drops a setView mid-zoom
     const res = await backend.cues(); $('#startBtn').disabled = false;
     if (!res.cues.length) { toast('This route is too short to follow'); return; }
-    navOn = true; renderRoute();
-    Object.assign(nav, { on: true, coords: res.coords, cues: res.cues, tracker: new RE.RouteTracker(res.coords, res.cues), follow: true, t0: Date.now(), called: new Map(), last: null, finished: false, firstAlong: undefined, me: null, acc: null, wasOff: false });
+    navOn = true; renderRoute(); hideMe();
+    Object.assign(nav, { on: true, coords: res.coords, cues: res.cues, tracker: new RE.RouteTracker(res.coords, res.cues), follow: true, t0: Date.now(), called: new Map(), last: null, finished: false, firstAlong: undefined, me: null, acc: null, wasOff: false, fix: null });
     if (!map.getPane('nav')) map.createPane('nav').style.zIndex = 460;   // above the route (450), below markers
     nav.layer.clearLayers().addTo(map);
     nav.doneLine = L.polyline([], { pane: 'nav', color: '#8a948f', weight: 7, opacity: .95, interactive: false }).addTo(nav.layer);
@@ -796,8 +863,8 @@
     $('#navIcon').innerHTML = turnIcon(res.cues[0]); $('#navDist').textContent = ''; $('#navText').textContent = 'Waiting for your location…';
     $('#navThen').textContent = res.cues[0].text; $('#navWarn').hidden = true;
     $('#navVoice').setAttribute('aria-pressed', String(!!S.voice)); $('#navVoice').textContent = S.voice ? 'Voice on' : 'Voice off';
-    clearInterval(nav.timer); nav.timer = setInterval(() => { if (nav.on && !nav.finished) $('#navTime').textContent = fmtTime((Date.now() - nav.t0) / 1000); }, 1000);
-    $('#navTime').textContent = '0:00';
+    clearInterval(nav.timer); nav.timer = setInterval(() => { if (nav.on && !nav.finished) $('#navTime').textContent = fmtTime((Date.now() - nav.t0) / 1000); if (nav.on) gpsLine(); }, 1000);
+    $('#navTime').textContent = '0:00'; gpsLine();
     keepAwake(); startGps();
     map.setView(res.coords[0], Math.max(map.getZoom(), 16), { animate: false });
   }
@@ -806,6 +873,7 @@
     if (nav.wake) { nav.wake.release().catch(() => {}); nav.wake = null; }
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     nav.layer.clearLayers(); map.removeLayer(nav.layer);
+    if (loc.users.has('locate') && loc.last) drawMe(loc.last);
     document.body.classList.remove('nav'); $('#navTop').hidden = true; $('#navBottom').hidden = true;
     renderRoute();
   }
@@ -815,13 +883,13 @@
     if (nav.finished) return;
     const speed = 8 * 1000 / (S.paces[S.activity] || 360), cum = RE.geo.cumul(nav.coords), L0 = cum[nav.coords.length - 1];
     nav.simD = nav.last ? nav.last.along : 0; nav.follow = true; $('#navRecenter').hidden = true;
-    $('#navSim').setAttribute('aria-pressed', 'true');
+    $('#navSim').setAttribute('aria-pressed', 'true'); gpsLine();
     let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
     nav.sim = setInterval(() => {
       nav.simD = Math.min(L0, nav.simD + speed * 0.5);
       const p = RE.geo.pointAt(nav.coords, cum, nav.simD), q = RE.geo.pointAt(nav.coords, cum, Math.min(L0, nav.simD + 5));
       const hd = (Math.atan2((q[1] - p[1]) * Math.cos(p[0] * Math.PI / 180), q[0] - p[0]) * 180 / Math.PI + 360) % 360;
-      onFix(p[0] + rnd() * 6 / 110574, p[1] + rnd() * 6 / 111300, 8, nav.simD < L0 ? hd : null);
+      onFix(p[0] + rnd() * 6 / 110574, p[1] + rnd() * 6 / 111300, 8, nav.simD < L0 ? hd : null, Date.now());
       if (nav.simD >= L0 && nav.sim) { clearInterval(nav.sim); nav.sim = null; $('#navSim').setAttribute('aria-pressed', 'false'); }
     }, 500);
   }
@@ -843,16 +911,42 @@
 
   $('#layersBtn').addEventListener('click', () => { const p = $('#layersPop'); if (!p.hidden) { closePops(); return; } closePops(); renderLayersPop(); placePop(p, $('#layersBtn')); });
   $('#finishBtn').addEventListener('click', () => { if (!$('#finishPop').hidden) { closePops(); return; } if (editor.coords.length < 2) { toast('Draw a route first'); return; } closePops(); openFinish(null); });
-  let meMk = null, meCircle = null;
+  // ---------------- the location button: live dot; follows you until you move the map; tap again to stop
+  let meMk = null, meCircle = null, meFollow = false, meWarned = false;
+  function hideMe() { if (meMk) { miscLayer.removeLayer(meMk); miscLayer.removeLayer(meCircle); meMk = meCircle = null; } }
+  function drawMe(f) {
+    if (navOn || !f) return;   // while following a route, Start draws its own dot
+    const ll = [f.lat, f.lon], first = !meMk;
+    if (first) {
+      meCircle = L.circle(ll, { radius: f.acc, color: '#2563eb', weight: 1, fillOpacity: .1, interactive: false }).addTo(miscLayer);
+      meMk = L.marker(ll, { icon: icon('me', '', 18), interactive: false, zIndexOffset: 800 }).addTo(miscLayer);
+    } else { meMk.setLatLng(ll); meCircle.setLatLng(ll).setRadius(f.acc); }
+    if (first) map.setView(ll, Math.max(map.getZoom(), f.acc > 500 ? 13 : 16)); else if (meFollow) map.panTo(ll, { animate: true, duration: 0.4 });
+  }
+  function locateBtnState() {
+    const b = $('#locateBtn'), on = loc.users.has('locate');
+    b.setAttribute('aria-pressed', String(on)); b.dataset.follow = String(on && meFollow);
+    b.title = !on ? 'Show my location' : meFollow ? 'Stop showing my location' : 'Follow my location again';
+    b.setAttribute('aria-label', b.title);
+  }
+  function onLocate(f, err) {
+    if (err) {
+      if (err.code === 1) { toast(`Location is off for this page. ${ALLOW_HELP}`, 9000); stopLocate(); }
+      else if (err.code === 0) { toast('Location is not available in this browser'); stopLocate(); }
+      else if (!f) toast('Waiting for GPS…', 2500);
+      return;
+    }
+    drawMe(f);
+    if (f && f.acc > 500 && !meWarned) { meWarned = true; toast(`Your phone is giving this page only an approximate location (${accText(f.acc)}), so the dot cannot follow you. ${PRECISE_HELP}`, 12000); }
+  }
+  function startLocate() { meFollow = true; meWarned = false; loc.start('locate', onLocate); locateBtnState(); if (loc.last && Date.now() - loc.last.at < 5000) onLocate(loc.last, null); }
+  function stopLocate() { meFollow = false; loc.stop('locate', onLocate); hideMe(); locateBtnState(); }
   $('#locateBtn').addEventListener('click', () => {
-    if (!navigator.geolocation) { toast('Location is not available in this browser'); return; }
-    navigator.geolocation.getCurrentPosition((p) => {
-      const ll = [p.coords.latitude, p.coords.longitude];
-      if (meMk) { miscLayer.removeLayer(meMk); miscLayer.removeLayer(meCircle); }
-      meCircle = L.circle(ll, { radius: p.coords.accuracy, color: '#2563eb', weight: 1, fillOpacity: .1, interactive: false }).addTo(miscLayer);
-      meMk = L.marker(ll, { icon: icon('me', '', 18), interactive: false }).addTo(miscLayer); map.setView(ll, Math.max(map.getZoom(), 16));
-    }, (err) => toast(err.code === 1 ? 'Location permission was refused' : 'Could not get your location'), { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+    if (!loc.users.has('locate')) startLocate();
+    else if (!meFollow) { meFollow = true; locateBtnState(); if (meMk) map.setView(meMk.getLatLng(), Math.max(map.getZoom(), 16)); }
+    else stopLocate();
   });
+  map.on('dragstart', () => { if (meFollow && !navOn) { meFollow = false; locateBtnState(); } });
   $('#toolDraw').addEventListener('click', () => setTool('draw'));
   $('#toolErase').addEventListener('click', () => setTool('erase'));
   $('#toolWaypoint').addEventListener('click', () => setTool('waypoint'));
@@ -1029,7 +1123,8 @@
     window.__jalan = { map, get editor() { return editor; }, get net() { return net; }, get engine() { return backend && backend.kind; },
       get profile() { return editor && editor.profile; }, idle: () => (editor ? editor.idle() : Promise.resolve()),
       path: (a, b) => backend.path(a, b), get tilesBlocked() { return tilesBlocked; }, get tool() { return tool; },
-      get in3d() { return in3d; }, get map3d() { return view3d.map; }, get nav() { return nav; }, fix: (lat, lon, acc, hd) => onFix(lat, lon, acc, hd) };
+      get in3d() { return in3d; }, get map3d() { return view3d.map; }, get nav() { return nav; }, fix: (lat, lon, acc, hd, t) => onFix(lat, lon, acc, hd, t),
+      get loc() { return loc; }, get me() { return meMk ? meMk.getLatLng() : null; } };
   }
   boot();
 })();
